@@ -1,0 +1,11 @@
+{
+  "/generation/masks/page": "app/generation/masks/page.js",
+  "/generation/masks/edit/page": "app/generation/masks/edit/page.js",
+  "/images-list/page": "app/images-list/page.js",
+  "/generation/masks/palette/page": "app/generation/masks/palette/page.js",
+  "/api/auth/session/route": "app/api/auth/session/route.js",
+  "/api/images/route": "app/api/images/route.js",
+  "/generation/page": "app/generation/page.js",
+  "/final-images/page": "app/final-images/page.js",
+  "/api/palettes/route": "app/api/palettes/route.js"
+}

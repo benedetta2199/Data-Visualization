@@ -1,0 +1,71 @@
+/* Global styles */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Image styles */
+.image-container {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: left;
+}
+
+.image-box {
+  margin: 10px;
+  padding: 5px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  position: relative;
+}
+
+.image-box img {
+  max-width: 400px;
+  max-height: 300px;
+  object-fit: cover;
+}
+
+.delete-button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  background-color: #ff0000;
+  color: #fff;
+  border: none;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+/* Gradient preview */
+.gradient-box {
+  width: 50%;
+  height: 100px;
+  border: 1px solid #ccc;
+  margin-bottom: 10px;
+}
+
+/* Opacity hover effect */
+.opacity-hover:hover {
+  opacity: 0.85;
+  transition: opacity 0.3s ease;
+}
+
+/* Image wrapper for segmentation */
+#imgWrapper canvas,
+#imgWrapper img {
+  max-width: 500px;
+}
+
+/* Custom link styles */
+.image-link {
+  text-decoration: none;
+}
+
+.image-link:hover img {
+  opacity: 0.8;
+  transition: opacity 0.3s ease;
+}
