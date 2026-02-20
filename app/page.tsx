@@ -58,6 +58,18 @@ export default function Home() {
                                 </div>
                             </Link>
                         </div>
+
+                        <div className="col-md-6">
+                            <Link href="/palettes" className="text-decoration-none">
+                                <div className="card h-100 text-white opacity-hover" style={{ backgroundColor: '#6f42c1' }}>
+                                    <div className="card-body p-4">
+                                        <i className="bi bi-palette fs-1 mb-3"></i>
+                                        <h3>Palette Scientifiche</h3>
+                                        <p>Visualizza e crea colour map per la ricolorazione</p>
+                                    </div>
+                                </div>
+                            </Link>
+                        </div>
                     </div>
                 </div>
             </div>

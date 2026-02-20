@@ -2,6 +2,17 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import {
+    SCIENTIFIC_PALETTES,
+    CustomPalette,
+    LOCAL_STORAGE_KEY,
+    interpolateColors,
+    hexToRgb,
+    shiftHue,
+    rgbToHsl,
+    buildGradientCSS,
+    buildGradientFromHex
+} from '@/app/lib/palettes';
 
 // SAM types
 interface SAMMask {
@@ -15,35 +26,9 @@ interface SAMMask {
     bbox: [number, number, number, number];
 }
 
-// Predefined palettes
-interface Palette {
-    name: string;
-    icon: string;
-    // Hue shift (degrees), saturation multiplier, brightness offset
-    hueShift: number;
-    saturationMult: number;
-    brightnessOffset: number;
-    // Optional tint color
-    tint?: [number, number, number];
-    tintStrength?: number;
-}
-
-const PALETTES: Palette[] = [
-    { name: 'Originale', icon: '🔄', hueShift: 0, saturationMult: 1.0, brightnessOffset: 0 },
-    { name: 'Caldo', icon: '🔥', hueShift: 15, saturationMult: 1.2, brightnessOffset: 10, tint: [255, 140, 50], tintStrength: 0.15 },
-    { name: 'Freddo', icon: '❄️', hueShift: -20, saturationMult: 0.9, brightnessOffset: 5, tint: [100, 150, 255], tintStrength: 0.15 },
-    { name: 'Vintage', icon: '📷', hueShift: 10, saturationMult: 0.7, brightnessOffset: -5, tint: [200, 170, 120], tintStrength: 0.2 },
-    { name: 'Vivido', icon: '🌈', hueShift: 0, saturationMult: 1.5, brightnessOffset: 15 },
-    { name: 'Seppia', icon: '🟤', hueShift: 0, saturationMult: 0.2, brightnessOffset: 0, tint: [180, 140, 100], tintStrength: 0.4 },
-    { name: 'Notturno', icon: '🌙', hueShift: -10, saturationMult: 0.8, brightnessOffset: -30, tint: [50, 50, 120], tintStrength: 0.2 },
-    { name: 'Pastello', icon: '🎀', hueShift: 0, saturationMult: 0.6, brightnessOffset: 30, tint: [255, 200, 220], tintStrength: 0.1 },
-    { name: 'Drammatico', icon: '🎭', hueShift: 0, saturationMult: 1.3, brightnessOffset: -20 },
-    { name: 'Solare', icon: '☀️', hueShift: 5, saturationMult: 1.1, brightnessOffset: 20, tint: [255, 220, 100], tintStrength: 0.1 },
-];
-
-// Per-mask palette assignment
-interface MaskPaletteSettings {
-    paletteIndex: number;
+interface PaletteSetting {
+    paletteName: string; // "viridis", "custom_xyz", or "Originale"
+    hueShift: number;    // -180 to 180
 }
 
 export default function MasksPalettePage() {
@@ -51,10 +36,27 @@ export default function MasksPalettePage() {
 
     const [masks, setMasks] = useState<SAMMask[]>([]);
     const [imageUrl, setImageUrl] = useState<string>('');
-    const [paletteSettings, setPaletteSettings] = useState<Map<number, MaskPaletteSettings>>(new Map());
+    const [paletteSettings, setPaletteSettings] = useState<Map<number, PaletteSetting>>(new Map());
+    const [customPalettes, setCustomPalettes] = useState<CustomPalette[]>([]);
+    const [openDropdown, setOpenDropdown] = useState<number | null>(null);
 
     const imageRef = useRef<HTMLImageElement | null>(null);
     const resultCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    const dropdownContainerRef = useRef<HTMLDivElement | null>(null);
+
+    // Cache generated LUTs to avoid recomputing every frame
+    const lutCache = useRef<Map<string, [number, number, number][]>>(new Map());
+
+    // Close dropdown on outside click
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            if (dropdownContainerRef.current && !dropdownContainerRef.current.contains(e.target as Node)) {
+                setOpenDropdown(null);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
 
     // Load data
     useEffect(() => {
@@ -71,91 +73,57 @@ export default function MasksPalettePage() {
             setMasks(loadedMasks);
             setImageUrl(imgUrl);
 
-            const settings = new Map<number, MaskPaletteSettings>();
+            // Initialize settings
+            const settings = new Map<number, PaletteSetting>();
             loadedMasks.forEach(m => {
-                settings.set(m.mask_id, { paletteIndex: 0 }); // 0 = Originale
+                settings.set(m.mask_id, { paletteName: 'Originale', hueShift: 0 });
             });
             setPaletteSettings(settings);
+
+            // Load custom palettes
+            const customData = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (customData) {
+                setCustomPalettes(JSON.parse(customData));
+            }
         } catch {
             router.push('/generation/masks/edit');
         }
     }, [router]);
 
-    // Helper: clamp value between 0 and 255
-    const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+    // Helper: Get LUT for a palette name
+    const getLUT = useCallback((name: string): [number, number, number][] | null => {
+        if (name === 'Originale') return null;
+        if (lutCache.current.has(name)) return lutCache.current.get(name)!;
 
-    // Helper: RGB to HSL
-    const rgbToHsl = (r: number, g: number, b: number): [number, number, number] => {
-        r /= 255; g /= 255; b /= 255;
-        const max = Math.max(r, g, b), min = Math.min(r, g, b);
-        const l = (max + min) / 2;
-        let h = 0, s = 0;
+        let colors: [number, number, number][] | null = null;
 
-        if (max !== min) {
-            const d = max - min;
-            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-            switch (max) {
-                case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-                case g: h = ((b - r) / d + 2) / 6; break;
-                case b: h = ((r - g) / d + 4) / 6; break;
+        // Check scientific
+        const scientific = SCIENTIFIC_PALETTES.find(p => p.name === name);
+        if (scientific) {
+            colors = scientific.colors;
+        } else {
+            // Check custom
+            const custom = customPalettes.find(p => p.name === name); // using name as identifier for simplicity in UI, but could be ID
+            if (custom) {
+                colors = custom.colors.map(hexToRgb);
             }
         }
-        return [h * 360, s, l];
-    };
 
-    // Helper: HSL to RGB
-    const hslToRgb = (h: number, s: number, l: number): [number, number, number] => {
-        h = ((h % 360) + 360) % 360;
-        const c = (1 - Math.abs(2 * l - 1)) * s;
-        const x = c * (1 - Math.abs((h / 60) % 2 - 1));
-        const m = l - c / 2;
-        let r = 0, g = 0, b = 0;
-
-        if (h < 60) { r = c; g = x; }
-        else if (h < 120) { r = x; g = c; }
-        else if (h < 180) { g = c; b = x; }
-        else if (h < 240) { g = x; b = c; }
-        else if (h < 300) { r = x; b = c; }
-        else { r = c; b = x; }
-
-        return [clamp((r + m) * 255), clamp((g + m) * 255), clamp((b + m) * 255)];
-    };
-
-    // Apply palette to a pixel
-    const applyPalette = (r: number, g: number, b: number, palette: Palette): [number, number, number] => {
-        if (palette.hueShift === 0 && palette.saturationMult === 1.0 && palette.brightnessOffset === 0 && !palette.tint) {
-            return [r, g, b]; // Original, no change
+        if (colors) {
+            const lut = interpolateColors(colors, 256);
+            lutCache.current.set(name, lut);
+            return lut;
         }
 
-        let [h, s, l] = rgbToHsl(r, g, b);
+        return null;
+    }, [customPalettes]);
 
-        // Apply hue shift
-        h = (h + palette.hueShift + 360) % 360;
-
-        // Apply saturation multiplier
-        s = Math.min(1, Math.max(0, s * palette.saturationMult));
-
-        // Apply brightness offset
-        l = Math.min(1, Math.max(0, l + palette.brightnessOffset / 100));
-
-        let [nr, ng, nb] = hslToRgb(h, s, l);
-
-        // Apply tint if present
-        if (palette.tint && palette.tintStrength) {
-            const t = palette.tintStrength;
-            nr = clamp(nr * (1 - t) + palette.tint[0] * t);
-            ng = clamp(ng * (1 - t) + palette.tint[1] * t);
-            nb = clamp(nb * (1 - t) + palette.tint[2] * t);
-        }
-
-        return [nr, ng, nb];
-    };
-
-    // Draw the result: original image with palette applied per-mask
+    // Draw the result
     const drawResult = useCallback(async () => {
         const canvas = resultCanvasRef.current;
         const img = imageRef.current;
-        if (!canvas || !img || masks.length === 0) return;
+        if (!canvas || !img) return;
+        if (img.naturalWidth === 0 || img.naturalHeight === 0) return;
 
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
@@ -163,44 +131,41 @@ export default function MasksPalettePage() {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
 
-        // Draw original image
+        // Draw original image base
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-        // Get original image data
         const originalData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const resultData = ctx.createImageData(canvas.width, canvas.height);
 
-        // Copy original as base
+        // Copy original (for unmasked areas)
         resultData.data.set(originalData.data);
 
-        // For each mask, load its bitmap, find which pixels belong to it, and apply palette
+        // Process each mask
         for (const mask of masks) {
-            const settings = paletteSettings.get(mask.mask_id);
-            if (!settings || settings.paletteIndex === 0) continue; // 0 = original
+            const setting = paletteSettings.get(mask.mask_id);
+            if (!setting || setting.paletteName === 'Originale') continue;
 
-            const palette = PALETTES[settings.paletteIndex];
-            if (!palette) continue;
+            const lut = getLUT(setting.paletteName);
+            if (!lut) continue;
 
-            // Load mask image
+            // Load mask bitmap
             const maskBitmap = await new Promise<Uint8Array | null>((resolve) => {
                 const maskImg = new Image();
+                maskImg.crossOrigin = "Anonymous";
                 maskImg.onload = () => {
                     const tempCanvas = document.createElement('canvas');
                     tempCanvas.width = canvas.width;
                     tempCanvas.height = canvas.height;
                     const tempCtx = tempCanvas.getContext('2d');
-                    if (tempCtx) {
-                        tempCtx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
-                        const maskData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
-                        // Extract alpha channel as mask
-                        const alphaMask = new Uint8Array(canvas.width * canvas.height);
-                        for (let i = 0; i < maskData.data.length; i += 4) {
-                            alphaMask[i / 4] = maskData.data[i + 3] > 0 ? 1 : 0;
-                        }
-                        resolve(alphaMask);
-                    } else {
-                        resolve(null);
+                    if (!tempCtx) { resolve(null); return; }
+
+                    tempCtx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+                    const mData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+                    const alphaMask = new Uint8Array(canvas.width * canvas.height);
+                    for (let i = 0; i < mData.data.length; i += 4) {
+                        alphaMask[i / 4] = mData.data[i + 3] > 0 ? 1 : 0;
                     }
+                    resolve(alphaMask);
                 };
                 maskImg.onerror = () => resolve(null);
                 maskImg.src = `data:image/png;base64,${mask.mask_base64}`;
@@ -208,48 +173,69 @@ export default function MasksPalettePage() {
 
             if (!maskBitmap) continue;
 
-            // Apply palette to masked pixels
+            // Apply palette
             for (let i = 0; i < maskBitmap.length; i++) {
                 if (maskBitmap[i] === 1) {
                     const idx = i * 4;
-                    const [nr, ng, nb] = applyPalette(
-                        originalData.data[idx],
-                        originalData.data[idx + 1],
-                        originalData.data[idx + 2],
-                        palette
-                    );
-                    resultData.data[idx] = nr;
-                    resultData.data[idx + 1] = ng;
-                    resultData.data[idx + 2] = nb;
+                    const r = originalData.data[idx];
+                    const g = originalData.data[idx + 1];
+                    const b = originalData.data[idx + 2];
+
+                    // Calculate luminance (0-255)
+                    const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+
+                    // Map to LUT
+                    const lutColor = lut[Math.min(255, Math.max(0, lum))];
+
+                    // Apply hue shift if needed
+                    let finalColor = lutColor;
+                    if (setting.hueShift !== 0) {
+                        finalColor = shiftHue(lutColor[0], lutColor[1], lutColor[2], setting.hueShift);
+                    }
+
+                    resultData.data[idx] = finalColor[0];
+                    resultData.data[idx + 1] = finalColor[1];
+                    resultData.data[idx + 2] = finalColor[2];
+                    // Alpha remains 255 from original copy
                 }
             }
         }
 
         ctx.putImageData(resultData, 0, 0);
-    }, [masks, paletteSettings]);
 
-    // Redraw when palette settings change
+    }, [masks, paletteSettings, getLUT]);
+
+    // Re-draw when dependencies change
     useEffect(() => {
         if (masks.length > 0 && imageRef.current) {
-            drawResult();
+            // small debounce/delay to ensure image loaded
+            const t = setTimeout(() => drawResult(), 50);
+            return () => clearTimeout(t);
         }
     }, [masks, paletteSettings, drawResult]);
 
-    // Update palette for a mask
-    const setPalette = (maskId: number, paletteIndex: number) => {
+    // Update handlers
+    const setPalette = (maskId: number, paletteName: string) => {
         setPaletteSettings(prev => {
             const newMap = new Map(prev);
-            newMap.set(maskId, { paletteIndex });
+            const current = newMap.get(maskId) || { paletteName: 'Originale', hueShift: 0 };
+            newMap.set(maskId, { ...current, paletteName });
+            return newMap;
+        });
+        setOpenDropdown(null);
+    };
+
+    const setHueShift = (maskId: number, shift: number) => {
+        setPaletteSettings(prev => {
+            const newMap = new Map(prev);
+            const current = newMap.get(maskId) || { paletteName: 'Originale', hueShift: 0 };
+            newMap.set(maskId, { ...current, hueShift: shift });
             return newMap;
         });
     };
 
-    // Go back to edit page
-    const goBack = () => {
-        router.push('/generation/masks/edit');
-    };
+    const goBack = () => router.push('/generation/masks/edit');
 
-    // Download result
     const downloadResult = () => {
         const canvas = resultCanvasRef.current;
         if (!canvas) return;
@@ -270,6 +256,23 @@ export default function MasksPalettePage() {
         );
     }
 
+    // Combine all palettes for the dropdown
+    const allPalettes = [
+        { name: 'Originale', label: 'Nessuna (Originale)', gradient: 'linear-gradient(to right, #ccc, #eee)', type: 'original' },
+        ...SCIENTIFIC_PALETTES.map(p => ({
+            name: p.name,
+            label: p.name,
+            gradient: buildGradientCSS(p.colors),
+            type: 'scientific'
+        })),
+        ...customPalettes.map(p => ({
+            name: p.name,
+            label: p.name + ' (Custom)',
+            gradient: buildGradientFromHex(p.colors),
+            type: 'custom'
+        }))
+    ];
+
     return (
         <div className="container-fluid mt-3" style={{ maxHeight: '100vh', overflow: 'hidden' }}>
             {/* Header */}
@@ -278,43 +281,37 @@ export default function MasksPalettePage() {
                     <button className="btn btn-outline-secondary" onClick={goBack}>
                         ← Indietro
                     </button>
-                    <h4 className="mb-0">🎨 Applica Palette</h4>
+                    <h4 className="mb-0">🎨 Applica Palette Scientifiche</h4>
                 </div>
                 <button className="btn btn-success" onClick={downloadResult}>
                     💾 Scarica Risultato
                 </button>
             </div>
 
-            {/* Two-column layout */}
+            {/* Layout */}
             <div className="row px-3" style={{ height: 'calc(100vh - 100px)' }}>
-                {/* Left column — Result preview (col-5) */}
+                {/* Preview Column */}
                 <div className="col-5 d-flex flex-column">
-                    <div className="card h-100">
-                        <div className="card-header bg-dark text-white py-2">
-                            <strong>📷 Anteprima Risultato</strong>
+                    <div className="card h-100 bg-dark">
+                        <div className="card-header bg-dark text-white border-bottom border-secondary py-2">
+                            <strong>📷 Anteprima</strong>
                         </div>
-                        <div
-                            className="card-body d-flex align-items-center justify-content-center p-2"
-                            style={{ overflow: 'auto', backgroundColor: '#1a1a1a' }}
-                        >
-                            <div style={{ position: 'relative', display: 'inline-block' }}>
-                                {/* Hidden original image for pixel data */}
+                        <div className="card-body d-flex align-items-start justify-content-center p-2" style={{ overflow: 'hidden' }}>
+                            <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                 <img
                                     ref={imageRef}
                                     src={imageUrl}
-                                    alt="Immagine originale"
+                                    alt="Source"
                                     style={{ display: 'none' }}
                                     crossOrigin="anonymous"
                                     onLoad={() => drawResult()}
                                 />
-                                {/* Result canvas */}
                                 <canvas
                                     ref={resultCanvasRef}
                                     style={{
                                         maxWidth: '100%',
-                                        maxHeight: 'calc(100vh - 200px)',
-                                        display: 'block',
-                                        borderRadius: '4px'
+                                        maxHeight: '100%',
+                                        objectFit: 'contain'
                                     }}
                                 />
                             </div>
@@ -322,65 +319,153 @@ export default function MasksPalettePage() {
                     </div>
                 </div>
 
-                {/* Right column — Palette selection per mask (col-7) */}
+                {/* Controls Column */}
                 <div className="col-7 d-flex flex-column">
-                    <div className="card h-100">
-                        <div className="card-header bg-primary text-white py-2">
-                            <strong>🎨 Palette per Maschera ({masks.length})</strong>
+                    <div className="card h-100 d-flex flex-column">
+                        <div className="card-header bg-primary text-white py-2 flex-shrink-0">
+                            <strong>🛠️ Configurazione Maschere ({masks.length})</strong>
                         </div>
-                        <div className="card-body p-0" style={{ overflowY: 'auto' }}>
+                        <div className="card-body p-0 flex-grow-1" ref={dropdownContainerRef} style={{ overflowY: 'auto', minHeight: 0 }}>
                             {masks.map((mask) => {
-                                const settings = paletteSettings.get(mask.mask_id);
-                                const currentPaletteIndex = settings?.paletteIndex ?? 0;
+                                const setting = paletteSettings.get(mask.mask_id) || { paletteName: 'Originale', hueShift: 0 };
+                                const currentPaletteObj = allPalettes.find(p => p.name === setting.paletteName);
+                                const isOpen = openDropdown === mask.mask_id;
 
                                 return (
-                                    <div
-                                        key={mask.mask_id}
-                                        className="border-bottom p-3"
-                                        style={{ backgroundColor: '#fafafa' }}
-                                    >
-                                        {/* Mask header */}
-                                        <div className="d-flex align-items-center gap-3 mb-2">
-                                            <img
-                                                src={`data:image/png;base64,${mask.mask_base64}`}
-                                                alt={mask.name}
-                                                style={{
-                                                    width: '60px',
-                                                    height: '45px',
-                                                    objectFit: 'contain',
-                                                    borderRadius: '4px',
-                                                    backgroundColor: '#eee',
-                                                    border: `2px solid rgb(${mask.color.join(',')})`
-                                                }}
-                                            />
-                                            <div>
-                                                <strong style={{ fontSize: '0.9rem' }}>{mask.name}</strong>
-                                                <small className="text-muted d-block" style={{ fontSize: '0.75rem' }}>
-                                                    {mask.coverage_percent.toFixed(1)}% dell'immagine
-                                                </small>
-                                            </div>
-                                            <span className="ms-auto badge bg-secondary">
-                                                {PALETTES[currentPaletteIndex]?.icon} {PALETTES[currentPaletteIndex]?.name}
-                                            </span>
-                                        </div>
-
-                                        {/* Palette buttons */}
-                                        <div className="d-flex gap-1 flex-wrap">
-                                            {PALETTES.map((palette, idx) => (
-                                                <button
-                                                    key={idx}
-                                                    className={`btn btn-sm ${currentPaletteIndex === idx ? 'btn-primary' : 'btn-outline-secondary'}`}
-                                                    onClick={() => setPalette(mask.mask_id, idx)}
-                                                    title={palette.name}
+                                    <div key={mask.mask_id} className="border-bottom p-3">
+                                        <div className="row align-items-center">
+                                            {/* Mask Info */}
+                                            <div className="col-2 text-center">
+                                                <img
+                                                    src={`data:image/png;base64,${mask.mask_base64}`}
+                                                    alt={mask.name}
                                                     style={{
-                                                        fontSize: '0.75rem',
-                                                        padding: '3px 8px',
-                                                        minWidth: '75px'
+                                                        width: '50px',
+                                                        height: '50px',
+                                                        objectFit: 'contain',
+                                                        backgroundColor: '#eee',
+                                                        border: `2px solid rgb(${mask.color.join(',')})`,
+                                                        borderRadius: '4px'
                                                     }}
-                                                >
-                                                    {palette.icon} {palette.name}
-                                                </button>
-                                            ))}
+                                                />
+                                                <div className="mt-1 small fw-bold text-truncate">{mask.name}</div>
+                                            </div>
+
+                                            {/* Controls */}
+                                            <div className="col-10">
+                                                {/* Palette Select */}
+                                                <div className="mb-2">
+                                                    <label className="form-label small text-muted mb-1">Palette</label>
+                                                    <div className="dropdown" style={{ position: 'relative' }}>
+                                                        <button
+                                                            className="btn btn-outline-secondary btn-sm dropdown-toggle w-100 d-flex align-items-center justify-content-between"
+                                                            type="button"
+                                                            onClick={() => setOpenDropdown(isOpen ? null : mask.mask_id)}
+                                                        >
+                                                            <div className="d-flex align-items-center gap-2 overflow-hidden">
+                                                                <div
+                                                                    style={{
+                                                                        width: '60px',
+                                                                        height: '15px',
+                                                                        background: currentPaletteObj?.gradient,
+                                                                        borderRadius: '2px'
+                                                                    }}
+                                                                />
+                                                                <span className="text-truncate">{currentPaletteObj?.label}</span>
+                                                            </div>
+                                                        </button>
+                                                        <ul
+                                                            className={`dropdown-menu w-100 shadow ${isOpen ? 'show' : ''}`}
+                                                            style={{ maxHeight: '300px', overflowY: 'auto', ...(isOpen ? { display: 'block' } : {}) }}
+                                                        >
+                                                            <li><h6 className="dropdown-header">Standard</h6></li>
+                                                            {allPalettes.filter(p => p.type === 'scientific').map(p => (
+                                                                <li key={p.name}>
+                                                                    <button
+                                                                        className={`dropdown-item d-flex align-items-center gap-2 ${setting.paletteName === p.name ? 'active' : ''}`}
+                                                                        onClick={() => setPalette(mask.mask_id, p.name)}
+                                                                    >
+                                                                        <div
+                                                                            style={{
+                                                                                width: '40px',
+                                                                                height: '15px',
+                                                                                background: p.gradient,
+                                                                                borderRadius: '2px',
+                                                                                border: '1px solid #ddd'
+                                                                            }}
+                                                                        />
+                                                                        <span>{p.label}</span>
+                                                                    </button>
+                                                                </li>
+                                                            ))}
+
+                                                            {customPalettes.length > 0 && (
+                                                                <>
+                                                                    <li><hr className="dropdown-divider" /></li>
+                                                                    <li><h6 className="dropdown-header">Personalizzate</h6></li>
+                                                                    {allPalettes.filter(p => p.type === 'custom').map(p => (
+                                                                        <li key={p.name}>
+                                                                            <button
+                                                                                className={`dropdown-item d-flex align-items-center gap-2 ${setting.paletteName === p.name ? 'active' : ''}`}
+                                                                                onClick={() => setPalette(mask.mask_id, p.name)}
+                                                                            >
+                                                                                <div
+                                                                                    style={{
+                                                                                        width: '40px',
+                                                                                        height: '15px',
+                                                                                        background: p.gradient,
+                                                                                        borderRadius: '2px',
+                                                                                        border: '1px solid #ddd'
+                                                                                    }}
+                                                                                />
+                                                                                <span>{p.label.replace(' (Custom)', '')}</span>
+                                                                            </button>
+                                                                        </li>
+                                                                    ))}
+                                                                </>
+                                                            )}
+
+                                                            <li><hr className="dropdown-divider" /></li>
+                                                            <li>
+                                                                <button
+                                                                    className={`dropdown-item d-flex align-items-center gap-2 ${setting.paletteName === 'Originale' ? 'active' : ''}`}
+                                                                    onClick={() => setPalette(mask.mask_id, 'Originale')}
+                                                                >
+                                                                    <div
+                                                                        style={{
+                                                                            width: '40px',
+                                                                            height: '15px',
+                                                                            background: 'linear-gradient(to right, #ccc, #eee)',
+                                                                            borderRadius: '2px',
+                                                                            border: '1px solid #ddd'
+                                                                        }}
+                                                                    />
+                                                                    <span>Nessuna (Originale)</span>
+                                                                </button>
+                                                            </li>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+
+                                                {/* Hue Slider (Only if not Originale) */}
+                                                {setting.paletteName !== 'Originale' && (
+                                                    <div>
+                                                        <div className="d-flex justify-content-between mb-1">
+                                                            <label className="form-label small text-muted mb-0">Tonalità (Hue Shift)</label>
+                                                            <span className="badge bg-secondary">{setting.hueShift}°</span>
+                                                        </div>
+                                                        <input
+                                                            type="range"
+                                                            className="form-range"
+                                                            min="-180"
+                                                            max="180"
+                                                            step="5"
+                                                            value={setting.hueShift}
+                                                            onChange={(e) => setHueShift(mask.mask_id, parseInt(e.target.value))}
+                                                        />
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                                 );
@@ -392,3 +477,4 @@ export default function MasksPalettePage() {
         </div>
     );
 }
+

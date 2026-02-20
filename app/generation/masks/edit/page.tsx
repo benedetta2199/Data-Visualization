@@ -100,12 +100,9 @@ export default function MasksEditPage() {
         const ctx = overlayCanvas.getContext('2d');
         if (!ctx) return;
 
-        overlayCanvas.width = img.clientWidth;
-        overlayCanvas.height = img.clientHeight;
+        overlayCanvas.width = img.naturalWidth;
+        overlayCanvas.height = img.naturalHeight;
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-
-        const scaleX = img.clientWidth / img.naturalWidth;
-        const scaleY = img.clientHeight / img.naturalHeight;
 
         for (const mask of masks) {
             const settings = editSettings.get(mask.mask_id);
@@ -239,17 +236,17 @@ export default function MasksEditPage() {
                             <small className="ms-2 text-light">Le modifiche si aggiornano in tempo reale</small>
                         </div>
                         <div
-                            className="card-body d-flex align-items-center justify-content-center p-2"
+                            className="card-body d-flex align-items-start justify-content-center p-2"
                             style={{ overflow: 'auto', backgroundColor: '#1a1a1a' }}
                         >
-                            <div style={{ position: 'relative', display: 'inline-block' }}>
+                            <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', maxHeight: '100%' }}>
                                 <img
                                     ref={imageRef}
                                     src={imageUrl}
                                     alt="Immagine originale"
                                     style={{
                                         maxWidth: '100%',
-                                        maxHeight: 'calc(100vh - 200px)',
+                                        maxHeight: '100%',
                                         display: 'block',
                                         borderRadius: '4px'
                                     }}
@@ -280,11 +277,11 @@ export default function MasksEditPage() {
 
                 {/* Right column — Mask edit list (col-7) */}
                 <div className="col-7 d-flex flex-column">
-                    <div className="card h-100">
-                        <div className="card-header bg-primary text-white py-2">
+                    <div className="card h-100 d-flex flex-column">
+                        <div className="card-header bg-primary text-white py-2 flex-shrink-0">
                             <strong>🎨 Proprietà Maschere ({masks.length})</strong>
                         </div>
-                        <div className="card-body p-0" style={{ overflowY: 'auto' }}>
+                        <div className="card-body p-0 flex-grow-1" style={{ overflowY: 'auto', minHeight: 0 }}>
                             {masks.map((mask) => {
                                 const settings = editSettings.get(mask.mask_id);
                                 if (!settings) return null;

@@ -9,6 +9,7 @@ const navLinks = [
     { text: 'Genera Immagine', url: '/image' },
     { text: 'Immagini', url: '/images-list' },
     { text: 'Immagini finali', url: '/final-images' },
+    { text: 'Palette', url: '/palettes' },
 ];
 
 export default function Navbar() {
