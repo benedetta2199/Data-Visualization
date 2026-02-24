@@ -419,7 +419,7 @@ export default function MasksEditorPage() {
                                 gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
                                 gap: '8px',
                                 overflowY: 'auto',
-                                flex: 1,
+                                flex: 'none',
                                 padding: '8px',
                                 backgroundColor: '#f8f9fa',
                                 borderRadius: '8px'

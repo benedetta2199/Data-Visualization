@@ -281,7 +281,7 @@ export default function MasksEditPage() {
                         <div className="card-header bg-primary text-white py-2 flex-shrink-0">
                             <strong>🎨 Proprietà Maschere ({masks.length})</strong>
                         </div>
-                        <div className="card-body p-0 flex-grow-1" style={{ overflowY: 'auto', minHeight: 0 }}>
+                        <div className="card-body p-0 flex-grow-1" style={{ overflowY: 'auto', height: 0 }}>
                             {masks.map((mask) => {
                                 const settings = editSettings.get(mask.mask_id);
                                 if (!settings) return null;

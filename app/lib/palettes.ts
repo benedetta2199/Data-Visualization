@@ -224,6 +224,20 @@ export const shiftHue = (r: number, g: number, b: number, degree: number): [numb
     return hslToRgb(h + degree, s, l);
 };
 
+// Helper: Shift Hue, Saturation and Lightness
+export const shiftHSL = (
+    r: number, g: number, b: number,
+    hDeg: number, sDelta: number, lDelta: number
+): [number, number, number] => {
+    if (hDeg === 0 && sDelta === 0 && lDelta === 0) return [r, g, b];
+    const [h, s, l] = rgbToHsl(r, g, b);
+    return hslToRgb(
+        h + hDeg,
+        Math.max(0, Math.min(1, s + sDelta)),
+        Math.max(0, Math.min(1, l + lDelta))
+    );
+};
+
 // Interpolate colors to create a LUT of `steps` size
 export function interpolateColors(colors: [number, number, number][], steps: number = 256): [number, number, number][] {
     const lut: [number, number, number][] = [];
@@ -262,4 +276,179 @@ export function buildGradientCSS(colors: [number, number, number][]): string {
 
 export function buildGradientFromHex(hexColors: string[]): string {
     return buildGradientCSS(hexColors.map(hexToRgb));
+}
+
+// ── Dominant color extraction utilities ──
+
+/**
+ * Check if an RGB color is "chromatic" (not white, black, gray, or heavily desaturated).
+ * Filters colors like #faf5f6, #7d807d, #202021, pure white/black.
+ */
+export function isChromatic(r: number, g: number, b: number): boolean {
+    const [, s, l] = rgbToHsl(r, g, b);
+    // Reject if saturation is too low (grays, near-grays)
+    if (s < 0.15) return false;
+    // Reject if luminosity is too extreme (near-black or near-white)
+    if (l < 0.10 || l > 0.90) return false;
+    return true;
+}
+
+/**
+ * Euclidean distance between two RGB colors.
+ */
+export function colorDistance(
+    c1: [number, number, number],
+    c2: [number, number, number]
+): number {
+    const dr = c1[0] - c2[0];
+    const dg = c1[1] - c2[1];
+    const db = c1[2] - c2[2];
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+/**
+ * Extracts the dominant colors from an image based on a mask.
+ * 
+ * The function analyzes pixels that are marked in the mask and have saturation > 15%,
+ * then identifies the most frequent hue bands and calculates the average color for each.
+ * 
+ * @param imageData - The image data containing RGBA pixel values
+ * @param maskBitmap - Uint8Array mask where 1 indicates pixels to consider, 0 to ignore
+ * @param count - Number of dominant colors to extract (default: 3)
+ * @returns An array of RGB color values [r, g, b] for each dominant color
+ */
+export function extractDominantColors(
+    imageData: ImageData,
+    maskBitmap: Uint8Array,
+    count: number = 3
+): [number, number, number][] {
+    const { data, width, height } = imageData;
+    const totalPixels = width * height;
+
+    // STEP 1: Collect all chromatic pixels with S > 0.15
+    const allHslSamples: [number, number, number][] = []; // [h, s, l]
+
+    for (let i = 0; i < totalPixels; i++) {
+        // Skip pixels not in mask
+        if (maskBitmap[i] !== 1) continue;
+
+        // Get RGB values
+        const idx = i * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+
+        // Convert to HSL
+        const [h, s, l] = rgbToHsl(r, g, b);
+
+        // Filter by saturation > 15% to exclude grayish colors
+        if (s > 0.15) {
+            allHslSamples.push([h, s, l]);
+        }
+    }
+
+    // Return empty array if no valid pixels found
+    if (allHslSamples.length === 0) return [];
+
+    // STEP 2: If more than 5000 pixels, sample down to ~5000 for performance
+    let hslSamples: [number, number, number][] = allHslSamples;
+
+    if (allHslSamples.length > 5000) {
+        const step = Math.floor(allHslSamples.length / 5000);
+        hslSamples = [];
+        for (let i = 0; i < allHslSamples.length; i += step) {
+            hslSamples.push(allHslSamples[i]);
+            if (hslSamples.length >= 5000) break;
+        }
+    }
+
+    // ── Step 3: Find the top N hue bands (30° buckets → 12 bands) ──
+    const hueBandSize = 30; // degrees
+    const hueBands = new Map<number, number>(); // bandIndex → count
+
+    // Count pixels in each hue band
+    for (const [h] of hslSamples) {
+        const band = Math.floor(h / hueBandSize) % 12;
+        hueBands.set(band, (hueBands.get(band) || 0) + 1);
+    }
+
+    // Sort hue bands by frequency and take top 'count' bands
+    const topHueBands = Array.from(hueBands.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, count)
+        .map(([band]) => band);
+
+    // ── Step 4: For each top hue band, calculate the average color ──
+    const result: [number, number, number][] = [];
+
+    for (const hueBand of topHueBands) {
+        // Calculate the range for this hue band
+        const bandMin = hueBand * hueBandSize;
+        const bandMax = bandMin + hueBandSize;
+
+        // Collect all samples belonging to this hue band
+        const bandSamples = hslSamples.filter(([h]) => {
+            return h >= bandMin && h < bandMax;
+        });
+
+        if (bandSamples.length === 0) continue;
+
+        // Calculate average H, S, L for this band
+        let sumH = 0, sumS = 0, sumL = 0;
+
+        for (const [h, s, l] of bandSamples) {
+            sumH += h;
+            sumS += s;
+            sumL += l;
+        }
+
+        const avgH = sumH / bandSamples.length;
+        const avgS = sumS / bandSamples.length;
+        const avgL = sumL / bandSamples.length;
+
+        // Convert average HSL back to RGB and add to result
+        result.push(hslToRgb(avgH, avgS, avgL));
+    }
+
+    return result;
+}
+
+/**
+ * Check if a palette contains at least one color that matches any of the dominant colors.
+ * For each dominant color, it checks if the palette contains that exact color
+ * or a color within a threshold in RGB cube space.
+ *
+ * @param paletteColors - The raw palette stop colors (RGB tuples)
+ * @param dominantColors - Dominant colors extracted from the mask (RGB tuples)
+ * @param rgbThreshold - Maximum RGB distance to consider a color "similar" (default: 30)
+ * @returns true if the palette contains a match for ANY dominant color, false otherwise
+ */
+export function paletteContainsAnyDominantColor(
+    paletteColors: [number, number, number][],
+    dominantColors: [number, number, number][],
+    rgbThreshold: number = 30
+): boolean {
+    if (paletteColors.length === 0 || dominantColors.length === 0) return false;
+
+    // Interpolate palette to 64 evenly-spaced colors for thorough comparison
+    const interpolated = interpolateColors(paletteColors, 64);
+
+    // Check EACH dominant color
+    for (const dominant of dominantColors) {
+        // Check if THIS dominant color is present in the palette
+        for (const paletteColor of interpolated) {
+            // Calculate RGB Euclidean distance
+            const dr = Math.abs(paletteColor[0] - dominant[0]);
+            const dg = Math.abs(paletteColor[1] - dominant[1]);
+            const db = Math.abs(paletteColor[2] - dominant[2]);
+
+            // If it's exactly the same color or within threshold
+            if (dr <= rgbThreshold && dg <= rgbThreshold && db <= rgbThreshold) {
+                return true; // Trovata una corrispondenza, restituisci true immediatamente
+            }
+        }
+    }
+
+    // Se nessun colore dominante ha trovato corrispondenza
+    return false;
 }
