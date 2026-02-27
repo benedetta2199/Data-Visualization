@@ -253,62 +253,71 @@ export default function MasksPalettePage() {
 
             // Determine the dominant HSL for selective mode
             const dominant = maskDominantColors.get(mask.mask_id) || [];
-            let origDomH = 0, origDomS = 0, origDomL = 0;
+
+            // ── Compute deltas for selective / non-selective mode ──
+            let hasShift = false;
+
             if (setting.selectiveMode && dominant.length > setting.selectedDominantIdx) {
                 const dc = dominant[setting.selectedDominantIdx];
-                [origDomH, origDomS, origDomL] = rgbToHsl(dc[0], dc[1], dc[2]);
-            }
-
-            // Compute deltas based on mode
-            let hDelta: number, sDelta: number, lDelta: number, hasShift: boolean;
-            if (setting.selectiveMode) {
-                // In selective: delta = slider absolute value - original dominant HSL
-                hDelta = setting.selectiveHue - origDomH;
-                sDelta = (setting.selectiveSat / 100) - origDomS;
-                lDelta = (setting.selectiveLight / 100) - origDomL;
+                // ── SELECTIVE MODE (unified for both palette and Originale) ──
+                // Palette only serves as visual guide on the slider;
+                // processing always uses hue-shift on matching pixels only.
+                const [origDomH, origDomS, origDomL] = rgbToHsl(dc[0], dc[1], dc[2]);
+                const hDelta = setting.selectiveHue - origDomH;
+                const sDelta = (setting.selectiveSat / 100) - origDomS;
+                const lDelta = (setting.selectiveLight / 100) - origDomL;
                 hasShift = hDelta !== 0 || sDelta !== 0 || lDelta !== 0;
-            } else {
-                hDelta = setting.hueShift;
-                sDelta = setting.satShift / 100;
-                lDelta = setting.lightShift / 100;
-                hasShift = setting.hueShift !== 0 || setting.satShift !== 0 || setting.lightShift !== 0;
-            }
 
-            // Apply palette + HSL shifts
-            for (let i = 0; i < maskBitmap.length; i++) {
-                if (maskBitmap[i] === 1) {
-                    const idx = i * 4;
-                    const r = originalData.data[idx];
-                    const g = originalData.data[idx + 1];
-                    const b = originalData.data[idx + 2];
+                for (let i = 0; i < maskBitmap.length; i++) {
+                    if (maskBitmap[i] === 1) {
+                        const idx = i * 4;
+                        const r = originalData.data[idx];
+                        const g = originalData.data[idx + 1];
+                        const b = originalData.data[idx + 2];
 
-                    let finalColor: [number, number, number];
+                        const [pixH] = rgbToHsl(r, g, b);
+                        let hueDiff = Math.abs(pixH - origDomH);
+                        if (hueDiff > 180) hueDiff = 360 - hueDiff;
 
-                    if (lut) {
-                        const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-                        finalColor = lut[Math.min(255, Math.max(0, lum))];
-                    } else {
-                        finalColor = [r, g, b];
+                        if (hueDiff <= 30 && hasShift) {
+                            const fc = shiftHSL(r, g, b, hDelta, sDelta, lDelta);
+                            resultData.data[idx] = fc[0];
+                            resultData.data[idx + 1] = fc[1];
+                            resultData.data[idx + 2] = fc[2];
+                        }
+                        // else: pixel stays as original copy
                     }
+                }
+            } else {
+                // ── NON-SELECTIVE MODE ──
+                const hDelta = setting.hueShift;
+                const sDelta = setting.satShift / 100;
+                const lDelta = setting.lightShift / 100;
+                hasShift = hDelta !== 0 || sDelta !== 0 || lDelta !== 0;
 
-                    // Apply HSL shift
-                    if (hasShift) {
-                        if (setting.selectiveMode && dominant.length > 0) {
-                            // Only shift pixels whose hue is within ±30° of the original dominant
-                            const [pixH] = rgbToHsl(finalColor[0], finalColor[1], finalColor[2]);
-                            let hueDiff = Math.abs(pixH - origDomH);
-                            if (hueDiff > 180) hueDiff = 360 - hueDiff;
-                            if (hueDiff <= 30) {
-                                finalColor = shiftHSL(finalColor[0], finalColor[1], finalColor[2], hDelta, sDelta, lDelta);
-                            }
+                for (let i = 0; i < maskBitmap.length; i++) {
+                    if (maskBitmap[i] === 1) {
+                        const idx = i * 4;
+                        const r = originalData.data[idx];
+                        const g = originalData.data[idx + 1];
+                        const b = originalData.data[idx + 2];
+
+                        let finalColor: [number, number, number];
+                        if (lut) {
+                            const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+                            finalColor = lut[Math.min(255, Math.max(0, lum))];
                         } else {
+                            finalColor = [r, g, b];
+                        }
+
+                        if (hasShift) {
                             finalColor = shiftHSL(finalColor[0], finalColor[1], finalColor[2], hDelta, sDelta, lDelta);
                         }
-                    }
 
-                    resultData.data[idx] = finalColor[0];
-                    resultData.data[idx + 1] = finalColor[1];
-                    resultData.data[idx + 2] = finalColor[2];
+                        resultData.data[idx] = finalColor[0];
+                        resultData.data[idx + 1] = finalColor[1];
+                        resultData.data[idx + 2] = finalColor[2];
+                    }
                 }
             }
         }
@@ -498,6 +507,89 @@ export default function MasksPalettePage() {
 
                                             {/* Controls */}
                                             <div className="col-10">
+                                                <div>
+                                                    {/* Selective mode switch + Reset */}
+                                                    <div className="d-flex align-items-center justify-content-between mb-2">
+                                                        {dominant.length > 0 && (
+                                                            <div className="form-check form-switch mb-0">
+                                                                <input
+                                                                    className="form-check-input"
+                                                                    type="checkbox"
+                                                                    role="switch"
+                                                                    id={`selective-${mask.mask_id}`}
+                                                                    checked={setting.selectiveMode}
+                                                                    onChange={(e) => {
+                                                                        const on = e.target.checked;
+                                                                        const updates: Partial<PaletteSetting> = { selectiveMode: on };
+                                                                        if (on && dominant.length > 0) {
+                                                                            const dc = dominant[setting.selectedDominantIdx] || dominant[0];
+                                                                            // Always init from original HSL (palette is only a visual guide)
+                                                                            const [dh, ds, dl] = rgbToHsl(dc[0], dc[1], dc[2]);
+                                                                            updates.selectiveHue = Math.round(dh);
+                                                                            updates.selectiveSat = Math.round(ds * 100);
+                                                                            updates.selectiveLight = Math.round(dl * 100);
+                                                                        }
+                                                                        updateMaskSetting(mask.mask_id, updates);
+                                                                    }}
+                                                                />
+                                                                <label className="form-check-label small text-muted" htmlFor={`selective-${mask.mask_id}`}>
+                                                                    Modifica selettiva
+                                                                </label>
+                                                            </div>
+                                                        )}
+                                                        <button
+                                                            className="btn btn-outline-secondary btn-sm py-0 px-2"
+                                                            title="Ripristina valori originali"
+                                                            onClick={() => updateMaskSetting(mask.mask_id, {
+                                                                hueShift: 0, satShift: 0, lightShift: 0,
+                                                                selectiveMode: false, selectedDominantIdx: 0,
+                                                                selectiveHue: 0, selectiveSat: 50, selectiveLight: 50,
+                                                                paletteName: 'Originale'
+                                                            })}
+                                                        >
+                                                            🔄 Reset
+                                                        </button>
+                                                    </div>
+
+                                                    {/* Dominant color selector (selective mode) */}
+                                                    {setting.selectiveMode && dominant.length > 0 && (
+                                                        <div className="d-flex gap-1 align-items-center mb-2">
+                                                            <small className="text-muted me-1">Colore:</small>
+                                                            {dominant.map((c, i) => {
+                                                                // Always show original dominant color
+                                                                const displayColor: [number, number, number] = c;
+                                                                return (
+                                                                    <button
+                                                                        key={i}
+                                                                        title={`rgb(${displayColor[0]},${displayColor[1]},${displayColor[2]})`}
+                                                                        className="btn btn-sm p-0"
+                                                                        style={{
+                                                                            width: '24px',
+                                                                            height: '24px',
+                                                                            borderRadius: '4px',
+                                                                            backgroundColor: `rgb(${displayColor[0]},${displayColor[1]},${displayColor[2]})`,
+                                                                            border: setting.selectedDominantIdx === i
+                                                                                ? '3px solid #0d6efd'
+                                                                                : '1px solid rgba(0,0,0,0.2)',
+                                                                            cursor: 'pointer'
+                                                                        }}
+                                                                        onClick={() => {
+                                                                            const dc = dominant[i];
+                                                                            // Always init from original HSL
+                                                                            const [dh, ds, dl] = rgbToHsl(dc[0], dc[1], dc[2]);
+                                                                            updateMaskSetting(mask.mask_id, {
+                                                                                selectedDominantIdx: i,
+                                                                                selectiveHue: Math.round(dh),
+                                                                                selectiveSat: Math.round(ds * 100),
+                                                                                selectiveLight: Math.round(dl * 100)
+                                                                            });
+                                                                        }}
+                                                                    />
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
                                                 {/* Palette Select */}
                                                 <div className="mb-2">
                                                     <label className="form-label small text-muted mb-1">Palette</label>
@@ -596,82 +688,6 @@ export default function MasksPalettePage() {
 
                                                 {/* HSL Controls */}
                                                 <div className="mt-2">
-                                                    {/* Selective mode switch + Reset */}
-                                                    <div className="d-flex align-items-center justify-content-between mb-2">
-                                                        {dominant.length > 0 && (
-                                                            <div className="form-check form-switch mb-0">
-                                                                <input
-                                                                    className="form-check-input"
-                                                                    type="checkbox"
-                                                                    role="switch"
-                                                                    id={`selective-${mask.mask_id}`}
-                                                                    checked={setting.selectiveMode}
-                                                                    onChange={(e) => {
-                                                                        const on = e.target.checked;
-                                                                        const updates: Partial<PaletteSetting> = { selectiveMode: on };
-                                                                        if (on && dominant.length > 0) {
-                                                                            const dc = dominant[setting.selectedDominantIdx] || dominant[0];
-                                                                            const [dh, ds, dl] = rgbToHsl(dc[0], dc[1], dc[2]);
-                                                                            updates.selectiveHue = Math.round(dh);
-                                                                            updates.selectiveSat = Math.round(ds * 100);
-                                                                            updates.selectiveLight = Math.round(dl * 100);
-                                                                        }
-                                                                        updateMaskSetting(mask.mask_id, updates);
-                                                                    }}
-                                                                />
-                                                                <label className="form-check-label small text-muted" htmlFor={`selective-${mask.mask_id}`}>
-                                                                    Modifica selettiva
-                                                                </label>
-                                                            </div>
-                                                        )}
-                                                        <button
-                                                            className="btn btn-outline-secondary btn-sm py-0 px-2"
-                                                            title="Ripristina valori originali"
-                                                            onClick={() => updateMaskSetting(mask.mask_id, {
-                                                                hueShift: 0, satShift: 0, lightShift: 0,
-                                                                selectiveMode: false, selectedDominantIdx: 0,
-                                                                selectiveHue: 0, selectiveSat: 50, selectiveLight: 50,
-                                                                paletteName: 'Originale'
-                                                            })}
-                                                        >
-                                                            🔄 Reset
-                                                        </button>
-                                                    </div>
-
-                                                    {/* Dominant color selector (selective mode) */}
-                                                    {setting.selectiveMode && dominant.length > 0 && (
-                                                        <div className="d-flex gap-1 align-items-center mb-2">
-                                                            <small className="text-muted me-1">Colore:</small>
-                                                            {dominant.map((c, i) => (
-                                                                <button
-                                                                    key={i}
-                                                                    title={`rgb(${c[0]},${c[1]},${c[2]})`}
-                                                                    className="btn btn-sm p-0"
-                                                                    style={{
-                                                                        width: '24px',
-                                                                        height: '24px',
-                                                                        borderRadius: '4px',
-                                                                        backgroundColor: `rgb(${c[0]},${c[1]},${c[2]})`,
-                                                                        border: setting.selectedDominantIdx === i
-                                                                            ? '3px solid #0d6efd'
-                                                                            : '1px solid rgba(0,0,0,0.2)',
-                                                                        cursor: 'pointer'
-                                                                    }}
-                                                                    onClick={() => {
-                                                                        const dc = dominant[i];
-                                                                        const [dh, ds, dl] = rgbToHsl(dc[0], dc[1], dc[2]);
-                                                                        updateMaskSetting(mask.mask_id, {
-                                                                            selectedDominantIdx: i,
-                                                                            selectiveHue: Math.round(dh),
-                                                                            selectiveSat: Math.round(ds * 100),
-                                                                            selectiveLight: Math.round(dl * 100)
-                                                                        });
-                                                                    }}
-                                                                />
-                                                            ))}
-                                                        </div>
-                                                    )}
-
                                                     {/* Hue slider */}
                                                     {(() => {
                                                         // Compute palette gradient for slider track
@@ -680,16 +696,21 @@ export default function MasksPalettePage() {
                                                             : 'linear-gradient(to right, hsl(0,80%,50%), hsl(60,80%,50%), hsl(120,80%,50%), hsl(180,80%,50%), hsl(240,80%,50%), hsl(300,80%,50%), hsl(360,80%,50%))';
 
                                                         const isSelective = setting.selectiveMode;
+                                                        const hasPalette = setting.paletteName !== 'Originale';
                                                         const hVal = isSelective ? setting.selectiveHue : setting.hueShift;
                                                         const sVal = isSelective ? setting.selectiveSat : setting.satShift;
                                                         const lVal = isSelective ? setting.selectiveLight : setting.lightShift;
 
+                                                        // Slider ranges: always 0-360 in selective mode
+                                                        const hMin = isSelective ? 0 : -180;
+                                                        const hMax = isSelective ? 360 : 180;
+                                                        const hLabel = `${hVal}°`;
                                                         return (
                                                             <>
                                                                 <div className="mb-1">
                                                                     <div className="d-flex justify-content-between">
                                                                         <label className="form-label small text-muted mb-0">Tonalità</label>
-                                                                        <span className="badge bg-secondary">{isSelective ? `${hVal}°` : `${hVal}°`}</span>
+                                                                        <span className="badge bg-secondary">{hLabel}</span>
                                                                     </div>
                                                                     <div style={{ position: 'relative', height: '28px' }}>
                                                                         <div style={{
@@ -702,8 +723,8 @@ export default function MasksPalettePage() {
                                                                             type="range"
                                                                             className="form-range"
                                                                             style={{ position: 'relative', zIndex: 1 }}
-                                                                            min={isSelective ? '0' : '-180'}
-                                                                            max={isSelective ? '360' : '180'}
+                                                                            min={String(hMin)}
+                                                                            max={String(hMax)}
                                                                             step="5"
                                                                             value={hVal}
                                                                             onChange={(e) => {

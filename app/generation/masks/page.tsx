@@ -308,10 +308,10 @@ export default function MasksEditorPage() {
                             )}
                         </div>
                         <div
-                            className="card-body d-flex align-items-center justify-content-center p-2"
+                            className="card-body d-flex align-items-start justify-content-center p-2"
                             style={{ overflow: 'auto', backgroundColor: '#1a1a1a' }}
                         >
-                            <div style={{ position: 'relative', display: 'inline-block' }}>
+                            <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', maxHeight: '100%' }}>
                                 <img
                                     ref={imageRef}
                                     src={imageUrl}
