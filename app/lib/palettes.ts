@@ -452,3 +452,34 @@ export function paletteContainsAnyDominantColor(
     // Se nessun colore dominante ha trovato corrispondenza
     return false;
 }
+
+/**
+ * Finds the position (0.0–1.0) in a LUT that best matches a given RGB color.
+ * Uses Euclidean distance in RGB space.
+ *
+ * @param lut - The look-up table (typically 256 entries)
+ * @param targetColor - The RGB color to find
+ * @returns Normalized position (0.0–1.0) of the closest match
+ */
+export function findClosestLUTPosition(
+    lut: [number, number, number][],
+    targetColor: [number, number, number]
+): number {
+    if (lut.length === 0) return 0.5;
+
+    let bestIdx = 0;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < lut.length; i++) {
+        const dr = lut[i][0] - targetColor[0];
+        const dg = lut[i][1] - targetColor[1];
+        const db = lut[i][2] - targetColor[2];
+        const dist = dr * dr + dg * dg + db * db;
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = i;
+        }
+    }
+
+    return bestIdx / (lut.length - 1);
+}
