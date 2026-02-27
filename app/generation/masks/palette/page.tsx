@@ -40,9 +40,10 @@ interface PaletteSetting {
     selectiveHue: number;       // 0-360 (selective, no palette)
     selectiveSat: number;       // 0-100 (selective, no palette)
     selectiveLight: number;     // 0-100 (selective, no palette)
-    palettePosition: number;    // 0.0-1.0 position in palette LUT
-    paletteSatShift: number;    // -100 to 100 saturation shift (palette mode)
-    paletteLightShift: number;  // -100 to 100 lightness shift (palette mode)
+    palettePosition: number;    // 0.0-1.0 master position in palette LUT
+    paletteHue: number;         // 0-360 target hue (palette mode)
+    paletteSat: number;         // 0-100 target saturation (palette mode)
+    paletteLight: number;       // 0-100 target lightness (palette mode)
     paletteOpacity: number;     // 0-100 intensity of palette recoloring
 }
 
@@ -57,8 +58,9 @@ const DEFAULT_SETTING: PaletteSetting = {
     selectiveSat: 50,
     selectiveLight: 50,
     palettePosition: 0.5,
-    paletteSatShift: 0,
-    paletteLightShift: 0,
+    paletteHue: 0,
+    paletteSat: 0,
+    paletteLight: 50,
     paletteOpacity: 100
 };
 
@@ -235,14 +237,8 @@ export default function MasksPalettePage() {
 
             // Skip if nothing to do
             const hasNonSelectiveShift = setting.hueShift !== 0 || setting.satShift !== 0 || setting.lightShift !== 0;
-            const hasPaletteChange = hasPalette && (
-                setting.palettePosition !== 0.5 ||
-                setting.paletteSatShift !== 0 ||
-                setting.paletteLightShift !== 0 ||
-                setting.selectiveMode
-            );
             if (!hasPalette && !hasNonSelectiveShift && !setting.selectiveMode) continue;
-            if (hasPalette && !hasPaletteChange) continue;
+            if (hasPalette && setting.paletteOpacity === 0) continue;
 
             // Load mask bitmap
             const maskBitmap = await new Promise<Uint8Array | null>((resolve) => {
@@ -273,17 +269,15 @@ export default function MasksPalettePage() {
 
             const opacity = hasPalette ? setting.paletteOpacity / 100 : 1;
 
+            // Compute target color for palette modes
+            const targetRgb = hasPalette ? hslToRgb(setting.paletteHue, setting.paletteSat / 100, setting.paletteLight / 100) : null;
+
             if (setting.selectiveMode && dominant.length > setting.selectedDominantIdx) {
                 const dc = dominant[setting.selectedDominantIdx];
 
-                if (hasPalette && lut) {
-                    // ── SELECTIVE + PALETTE: chromatic fusion on matched pixels ──
+                if (hasPalette && targetRgb) {
+                    // ── SELECTIVE + PALETTE: blend matched pixels toward target color ──
                     const [origDomH] = rgbToHsl(dc[0], dc[1], dc[2]);
-                    const targetIdx = Math.round(setting.palettePosition * (lut.length - 1));
-                    const targetColor = lut[Math.min(lut.length - 1, Math.max(0, targetIdx))];
-                    const [targetH] = rgbToHsl(targetColor[0], targetColor[1], targetColor[2]);
-                    const sDelta = setting.paletteSatShift / 100;
-                    const lDelta = setting.paletteLightShift / 100;
 
                     for (let i = 0; i < maskBitmap.length; i++) {
                         if (maskBitmap[i] === 1) {
@@ -292,20 +286,16 @@ export default function MasksPalettePage() {
                             const g = originalData.data[idx + 1];
                             const b = originalData.data[idx + 2];
 
-                            const [pixH, pixS, pixL] = rgbToHsl(r, g, b);
+                            const [pixH] = rgbToHsl(r, g, b);
                             let hueDiff = Math.abs(pixH - origDomH);
                             if (hueDiff > 180) hueDiff = 360 - hueDiff;
 
                             if (hueDiff <= 30) {
                                 const closeness = 1 - (hueDiff / 30);
-                                const blendH = pixH + (targetH - pixH) * closeness;
-                                const blendS = Math.max(0, Math.min(1, pixS + sDelta));
-                                const blendL = Math.max(0, Math.min(1, pixL + lDelta));
-                                const fc = hslToRgb(blendH, blendS, blendL);
-                                // Apply opacity
-                                resultData.data[idx] = Math.round(r + (fc[0] - r) * opacity);
-                                resultData.data[idx + 1] = Math.round(g + (fc[1] - g) * opacity);
-                                resultData.data[idx + 2] = Math.round(b + (fc[2] - b) * opacity);
+                                const blendAmt = closeness * opacity;
+                                resultData.data[idx] = Math.round(r + (targetRgb[0] - r) * blendAmt);
+                                resultData.data[idx + 1] = Math.round(g + (targetRgb[1] - g) * blendAmt);
+                                resultData.data[idx + 2] = Math.round(b + (targetRgb[2] - b) * blendAmt);
                             }
                         }
                     }
@@ -341,17 +331,8 @@ export default function MasksPalettePage() {
                 }
             } else {
                 // ── NON-SELECTIVE MODE ──
-                if (hasPalette && lut) {
-                    // ── NON-SELECTIVE + PALETTE: chromatic fusion ──
-                    // Read the target palette color and extract its hue
-                    const targetIdx = Math.round(setting.palettePosition * (lut.length - 1));
-                    const targetColor = lut[Math.min(lut.length - 1, Math.max(0, targetIdx))];
-                    const [targetH] = rgbToHsl(targetColor[0], targetColor[1], targetColor[2]);
-                    // Blend strength: 0 at center (0.5), 1 at edges
-                    const blendStrength = Math.abs(setting.palettePosition - 0.5) * 2;
-                    const sDelta = setting.paletteSatShift / 100;
-                    const lDelta = setting.paletteLightShift / 100;
-
+                if (hasPalette && targetRgb) {
+                    // ── NON-SELECTIVE + PALETTE: RGB blend toward target ──
                     for (let i = 0; i < maskBitmap.length; i++) {
                         if (maskBitmap[i] === 1) {
                             const idx = i * 4;
@@ -359,16 +340,9 @@ export default function MasksPalettePage() {
                             const g = originalData.data[idx + 1];
                             const b = originalData.data[idx + 2];
 
-                            // Chromatic fusion: shift the pixel's hue toward the target hue
-                            const [pixH, pixS, pixL] = rgbToHsl(r, g, b);
-                            const blendH = pixH + (targetH - pixH) * blendStrength;
-                            const blendS = Math.max(0, Math.min(1, pixS + sDelta * blendStrength));
-                            const blendL = Math.max(0, Math.min(1, pixL + lDelta * blendStrength));
-                            const fc = hslToRgb(blendH, blendS, blendL);
-                            // Apply opacity
-                            resultData.data[idx] = Math.round(r + (fc[0] - r) * opacity);
-                            resultData.data[idx + 1] = Math.round(g + (fc[1] - g) * opacity);
-                            resultData.data[idx + 2] = Math.round(b + (fc[2] - b) * opacity);
+                            resultData.data[idx] = Math.round(r + (targetRgb[0] - r) * opacity);
+                            resultData.data[idx + 1] = Math.round(g + (targetRgb[1] - g) * opacity);
+                            resultData.data[idx + 2] = Math.round(b + (targetRgb[2] - b) * opacity);
                         }
                     }
                 } else {
@@ -600,13 +574,17 @@ export default function MasksPalettePage() {
                                                                             const dc = dominant[setting.selectedDominantIdx] || dominant[0];
                                                                             const hasPal = setting.paletteName !== 'Originale';
                                                                             if (hasPal) {
-                                                                                // Auto-position slider to the dominant color in the LUT
                                                                                 const palLut = getLUT(setting.paletteName);
                                                                                 if (palLut) {
-                                                                                    updates.palettePosition = findClosestLUTPosition(palLut, dc);
+                                                                                    const pos = findClosestLUTPosition(palLut, dc);
+                                                                                    const lutColor = palLut[Math.round(pos * (palLut.length - 1))];
+                                                                                    const [h, s, l] = rgbToHsl(lutColor[0], lutColor[1], lutColor[2]);
+                                                                                    updates.palettePosition = pos;
+                                                                                    updates.paletteHue = Math.round(h);
+                                                                                    updates.paletteSat = Math.round(s * 100);
+                                                                                    updates.paletteLight = Math.round(l * 100);
                                                                                 }
                                                                             } else {
-                                                                                // Init from original HSL
                                                                                 const [dh, ds, dl] = rgbToHsl(dc[0], dc[1], dc[2]);
                                                                                 updates.selectiveHue = Math.round(dh);
                                                                                 updates.selectiveSat = Math.round(ds * 100);
@@ -628,7 +606,7 @@ export default function MasksPalettePage() {
                                                                 hueShift: 0, satShift: 0, lightShift: 0,
                                                                 selectiveMode: false, selectedDominantIdx: 0,
                                                                 selectiveHue: 0, selectiveSat: 50, selectiveLight: 50,
-                                                                palettePosition: 0.5, paletteSatShift: 0, paletteLightShift: 0,
+                                                                palettePosition: 0.5, paletteHue: 0, paletteSat: 0, paletteLight: 50,
                                                                 paletteOpacity: 100, paletteName: 'Originale'
                                                             })}
                                                         >
@@ -663,10 +641,20 @@ export default function MasksPalettePage() {
                                                                             const hasPal = setting.paletteName !== 'Originale';
                                                                             if (hasPal) {
                                                                                 const palLut = getLUT(setting.paletteName);
-                                                                                updateMaskSetting(mask.mask_id, {
-                                                                                    selectedDominantIdx: i,
-                                                                                    palettePosition: palLut ? findClosestLUTPosition(palLut, dc) : 0.5
-                                                                                });
+                                                                                if (palLut) {
+                                                                                    const pos = findClosestLUTPosition(palLut, dc);
+                                                                                    const lutColor = palLut[Math.round(pos * (palLut.length - 1))];
+                                                                                    const [h, s, l] = rgbToHsl(lutColor[0], lutColor[1], lutColor[2]);
+                                                                                    updateMaskSetting(mask.mask_id, {
+                                                                                        selectedDominantIdx: i,
+                                                                                        palettePosition: pos,
+                                                                                        paletteHue: Math.round(h),
+                                                                                        paletteSat: Math.round(s * 100),
+                                                                                        paletteLight: Math.round(l * 100)
+                                                                                    });
+                                                                                } else {
+                                                                                    updateMaskSetting(mask.mask_id, { selectedDominantIdx: i });
+                                                                                }
                                                                             } else {
                                                                                 const [dh, ds, dl] = rgbToHsl(dc[0], dc[1], dc[2]);
                                                                                 updateMaskSetting(mask.mask_id, {
@@ -786,17 +774,41 @@ export default function MasksPalettePage() {
                                                         const isSelective = setting.selectiveMode;
                                                         const hasPalette = setting.paletteName !== 'Originale';
 
+                                                        // Editable badge input helper style
+                                                        const badgeInputStyle: React.CSSProperties = {
+                                                            width: '52px', fontSize: '0.75rem', fontWeight: 700,
+                                                            textAlign: 'center' as const, backgroundColor: '#6c757d', color: '#fff',
+                                                            border: 'none', borderRadius: '0.375rem',
+                                                            padding: '0.25em 0.4em', lineHeight: 1, outline: 'none',
+                                                            MozAppearance: 'textfield'
+                                                        };
+
                                                         if (hasPalette) {
-                                                            // ── PALETTE MODE: Tonalità + Saturazione + Luminosità + Opacità ──
                                                             const paletteGradient = currentPaletteObj?.gradient || '';
                                                             const posPercent = Math.round(setting.palettePosition * 100);
+                                                            const currentLut = getLUT(setting.paletteName);
                                                             return (
                                                                 <>
-                                                                    {/* Tonalità (palette position) */}
+                                                                    {/* Posizione Palette (master) */}
                                                                     <div className="mb-1">
                                                                         <div className="d-flex justify-content-between">
-                                                                            <label className="form-label small text-muted mb-0">Tonalità</label>
-                                                                            <span className="badge bg-secondary">{posPercent}%</span>
+                                                                            <label className="form-label small text-muted mb-0">Posizione Palette</label>
+                                                                            <input type="number" style={badgeInputStyle}
+                                                                                min={0} max={100} value={posPercent}
+                                                                                onChange={(e) => {
+                                                                                    const v = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                                                                                    const pos = v / 100;
+                                                                                    const updates: Partial<PaletteSetting> = { palettePosition: pos };
+                                                                                    if (currentLut) {
+                                                                                        const lutColor = currentLut[Math.round(pos * (currentLut.length - 1))];
+                                                                                        const [h, s, l] = rgbToHsl(lutColor[0], lutColor[1], lutColor[2]);
+                                                                                        updates.paletteHue = Math.round(h);
+                                                                                        updates.paletteSat = Math.round(s * 100);
+                                                                                        updates.paletteLight = Math.round(l * 100);
+                                                                                    }
+                                                                                    updateMaskSetting(mask.mask_id, updates);
+                                                                                }}
+                                                                            />
                                                                         </div>
                                                                         <div style={{ position: 'relative', height: '28px' }}>
                                                                             <div style={{
@@ -806,68 +818,80 @@ export default function MasksPalettePage() {
                                                                                 opacity: 0.7, pointerEvents: 'none'
                                                                             }} />
                                                                             <input
-                                                                                type="range"
-                                                                                className="form-range"
+                                                                                type="range" className="form-range"
                                                                                 style={{ position: 'relative', zIndex: 1 }}
-                                                                                min="0"
-                                                                                max="100"
-                                                                                step="1"
-                                                                                value={posPercent}
+                                                                                min="0" max="100" step="1" value={posPercent}
                                                                                 onChange={(e) => {
-                                                                                    const v = parseInt(e.target.value) / 100;
-                                                                                    updateMaskSetting(mask.mask_id, { palettePosition: v });
+                                                                                    const pos = parseInt(e.target.value) / 100;
+                                                                                    const updates: Partial<PaletteSetting> = { palettePosition: pos };
+                                                                                    if (currentLut) {
+                                                                                        const lutColor = currentLut[Math.round(pos * (currentLut.length - 1))];
+                                                                                        const [h, s, l] = rgbToHsl(lutColor[0], lutColor[1], lutColor[2]);
+                                                                                        updates.paletteHue = Math.round(h);
+                                                                                        updates.paletteSat = Math.round(s * 100);
+                                                                                        updates.paletteLight = Math.round(l * 100);
+                                                                                    }
+                                                                                    updateMaskSetting(mask.mask_id, updates);
                                                                                 }}
                                                                             />
                                                                         </div>
                                                                     </div>
-                                                                    {/* Saturazione */}
+                                                                    {/* Tonalità (H) */}
+                                                                    <div className="mb-1">
+                                                                        <div className="d-flex justify-content-between">
+                                                                            <label className="form-label small text-muted mb-0">Tonalità</label>
+                                                                            <input type="number" style={badgeInputStyle}
+                                                                                min={0} max={360} value={setting.paletteHue}
+                                                                                onChange={(e) => updateMaskSetting(mask.mask_id, { paletteHue: Math.max(0, Math.min(360, parseInt(e.target.value) || 0)) })}
+                                                                            />
+                                                                        </div>
+                                                                        <input type="range" className="form-range"
+                                                                            min="0" max="360" step="1"
+                                                                            value={setting.paletteHue}
+                                                                            onChange={(e) => updateMaskSetting(mask.mask_id, { paletteHue: parseInt(e.target.value) })}
+                                                                        />
+                                                                    </div>
+                                                                    {/* Saturazione (S) */}
                                                                     <div className="mb-1">
                                                                         <div className="d-flex justify-content-between">
                                                                             <label className="form-label small text-muted mb-0">Saturazione</label>
-                                                                            <span className="badge bg-secondary">
-                                                                                {`${setting.paletteSatShift > 0 ? '+' : ''}${setting.paletteSatShift}%`}
-                                                                            </span>
+                                                                            <input type="number" style={badgeInputStyle}
+                                                                                min={0} max={100} value={setting.paletteSat}
+                                                                                onChange={(e) => updateMaskSetting(mask.mask_id, { paletteSat: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) })}
+                                                                            />
                                                                         </div>
-                                                                        <input
-                                                                            type="range"
-                                                                            className="form-range"
-                                                                            min="-100"
-                                                                            max="100"
-                                                                            step="5"
-                                                                            value={setting.paletteSatShift}
-                                                                            onChange={(e) => updateMaskSetting(mask.mask_id, { paletteSatShift: parseInt(e.target.value) })}
+                                                                        <input type="range" className="form-range"
+                                                                            min="0" max="100" step="1"
+                                                                            value={setting.paletteSat}
+                                                                            onChange={(e) => updateMaskSetting(mask.mask_id, { paletteSat: parseInt(e.target.value) })}
                                                                         />
                                                                     </div>
-                                                                    {/* Luminosità */}
+                                                                    {/* Luminosità (L) */}
                                                                     <div className="mb-1">
                                                                         <div className="d-flex justify-content-between">
                                                                             <label className="form-label small text-muted mb-0">Luminosità</label>
-                                                                            <span className="badge bg-secondary">
-                                                                                {`${setting.paletteLightShift > 0 ? '+' : ''}${setting.paletteLightShift}%`}
-                                                                            </span>
+                                                                            <input type="number" style={badgeInputStyle}
+                                                                                min={0} max={100} value={setting.paletteLight}
+                                                                                onChange={(e) => updateMaskSetting(mask.mask_id, { paletteLight: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) })}
+                                                                            />
                                                                         </div>
-                                                                        <input
-                                                                            type="range"
-                                                                            className="form-range"
-                                                                            min="-100"
-                                                                            max="100"
-                                                                            step="5"
-                                                                            value={setting.paletteLightShift}
-                                                                            onChange={(e) => updateMaskSetting(mask.mask_id, { paletteLightShift: parseInt(e.target.value) })}
+                                                                        <input type="range" className="form-range"
+                                                                            min="0" max="100" step="1"
+                                                                            value={setting.paletteLight}
+                                                                            onChange={(e) => updateMaskSetting(mask.mask_id, { paletteLight: parseInt(e.target.value) })}
                                                                         />
                                                                     </div>
                                                                     {/* Opacità */}
                                                                     <div className="mb-1">
                                                                         <div className="d-flex justify-content-between">
                                                                             <label className="form-label small text-muted mb-0">Opacità</label>
-                                                                            <span className="badge bg-secondary">{setting.paletteOpacity}%</span>
+                                                                            <input type="number" style={badgeInputStyle}
+                                                                                min={0} max={100} value={setting.paletteOpacity}
+                                                                                onChange={(e) => updateMaskSetting(mask.mask_id, { paletteOpacity: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) })}
+                                                                            />
                                                                         </div>
-                                                                        <input
-                                                                            type="range"
-                                                                            className="form-range"
-                                                                            min="0"
-                                                                            max="100"
-                                                                            step="5"
+                                                                        <input type="range" className="form-range"
+                                                                            min="0" max="100" step="5"
                                                                             value={setting.paletteOpacity}
                                                                             onChange={(e) => updateMaskSetting(mask.mask_id, { paletteOpacity: parseInt(e.target.value) })}
                                                                         />
@@ -876,21 +900,28 @@ export default function MasksPalettePage() {
                                                             );
                                                         }
 
-                                                        // ── NO PALETTE ("Originale"): hue/sat/light sliders ──
+                                                        // ── NO PALETTE ("Originale"): hue/sat/light sliders with editable badges ──
                                                         const hueGradient = 'linear-gradient(to right, hsl(0,80%,50%), hsl(60,80%,50%), hsl(120,80%,50%), hsl(180,80%,50%), hsl(240,80%,50%), hsl(300,80%,50%), hsl(360,80%,50%))';
                                                         const hVal = isSelective ? setting.selectiveHue : setting.hueShift;
                                                         const sVal = isSelective ? setting.selectiveSat : setting.satShift;
                                                         const lVal = isSelective ? setting.selectiveLight : setting.lightShift;
                                                         const hMin = isSelective ? 0 : -180;
                                                         const hMax = isSelective ? 360 : 180;
-                                                        const hLabel = `${hVal}°`;
+                                                        const sMin = isSelective ? 0 : -100;
 
                                                         return (
                                                             <>
                                                                 <div className="mb-1">
                                                                     <div className="d-flex justify-content-between">
                                                                         <label className="form-label small text-muted mb-0">Tonalità</label>
-                                                                        <span className="badge bg-secondary">{hLabel}</span>
+                                                                        <input type="number" style={badgeInputStyle}
+                                                                            min={hMin} max={hMax} value={hVal}
+                                                                            onChange={(e) => {
+                                                                                const v = Math.max(hMin, Math.min(hMax, parseInt(e.target.value) || 0));
+                                                                                if (isSelective) updateMaskSetting(mask.mask_id, { selectiveHue: v });
+                                                                                else updateMaskSetting(mask.mask_id, { hueShift: v });
+                                                                            }}
+                                                                        />
                                                                     </div>
                                                                     <div style={{ position: 'relative', height: '28px' }}>
                                                                         <div style={{
@@ -900,13 +931,9 @@ export default function MasksPalettePage() {
                                                                             opacity: 0.7, pointerEvents: 'none'
                                                                         }} />
                                                                         <input
-                                                                            type="range"
-                                                                            className="form-range"
+                                                                            type="range" className="form-range"
                                                                             style={{ position: 'relative', zIndex: 1 }}
-                                                                            min={String(hMin)}
-                                                                            max={String(hMax)}
-                                                                            step="5"
-                                                                            value={hVal}
+                                                                            min={String(hMin)} max={String(hMax)} step="5" value={hVal}
                                                                             onChange={(e) => {
                                                                                 const v = parseInt(e.target.value);
                                                                                 if (isSelective) updateMaskSetting(mask.mask_id, { selectiveHue: v });
@@ -916,21 +943,20 @@ export default function MasksPalettePage() {
                                                                     </div>
                                                                 </div>
 
-                                                                {/* Saturation slider */}
                                                                 <div className="mb-1">
                                                                     <div className="d-flex justify-content-between">
                                                                         <label className="form-label small text-muted mb-0">Saturazione</label>
-                                                                        <span className="badge bg-secondary">
-                                                                            {isSelective ? `${sVal}%` : `${sVal > 0 ? '+' : ''}${sVal}%`}
-                                                                        </span>
+                                                                        <input type="number" style={badgeInputStyle}
+                                                                            min={sMin} max={100} value={sVal}
+                                                                            onChange={(e) => {
+                                                                                const v = Math.max(sMin, Math.min(100, parseInt(e.target.value) || 0));
+                                                                                if (isSelective) updateMaskSetting(mask.mask_id, { selectiveSat: v });
+                                                                                else updateMaskSetting(mask.mask_id, { satShift: v });
+                                                                            }}
+                                                                        />
                                                                     </div>
-                                                                    <input
-                                                                        type="range"
-                                                                        className="form-range"
-                                                                        min={isSelective ? '0' : '-100'}
-                                                                        max="100"
-                                                                        step="5"
-                                                                        value={sVal}
+                                                                    <input type="range" className="form-range"
+                                                                        min={String(sMin)} max="100" step="5" value={sVal}
                                                                         onChange={(e) => {
                                                                             const v = parseInt(e.target.value);
                                                                             if (isSelective) updateMaskSetting(mask.mask_id, { selectiveSat: v });
@@ -939,21 +965,20 @@ export default function MasksPalettePage() {
                                                                     />
                                                                 </div>
 
-                                                                {/* Lightness slider */}
                                                                 <div className="mb-1">
                                                                     <div className="d-flex justify-content-between">
                                                                         <label className="form-label small text-muted mb-0">Luminosità</label>
-                                                                        <span className="badge bg-secondary">
-                                                                            {isSelective ? `${lVal}%` : `${lVal > 0 ? '+' : ''}${lVal}%`}
-                                                                        </span>
+                                                                        <input type="number" style={badgeInputStyle}
+                                                                            min={sMin} max={100} value={lVal}
+                                                                            onChange={(e) => {
+                                                                                const v = Math.max(sMin, Math.min(100, parseInt(e.target.value) || 0));
+                                                                                if (isSelective) updateMaskSetting(mask.mask_id, { selectiveLight: v });
+                                                                                else updateMaskSetting(mask.mask_id, { lightShift: v });
+                                                                            }}
+                                                                        />
                                                                     </div>
-                                                                    <input
-                                                                        type="range"
-                                                                        className="form-range"
-                                                                        min={isSelective ? '0' : '-100'}
-                                                                        max="100"
-                                                                        step="5"
-                                                                        value={lVal}
+                                                                    <input type="range" className="form-range"
+                                                                        min={String(sMin)} max="100" step="5" value={lVal}
                                                                         onChange={(e) => {
                                                                             const v = parseInt(e.target.value);
                                                                             if (isSelective) updateMaskSetting(mask.mask_id, { selectiveLight: v });
