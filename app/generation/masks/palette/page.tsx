@@ -83,7 +83,7 @@ const DEFAULT_SETTING: PaletteSetting = {
     paletteHue: 0,
     paletteSat: 0,
     paletteLight: 50,
-    paletteOpacity: 100,
+    paletteOpacity: 50,
     selectiveRange: 100,
     tolerance: { ...DEFAULT_TOLERANCE }
 };
