@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Script from 'next/script';
+import Image from 'next/image';
 
 // DeepLab types
 declare const deeplab: {
@@ -69,6 +70,7 @@ export default function GenerationPage() {
 
     // Image and canvas
     const [imageUrl, setImageUrl] = useState<string>('');
+    const [imagePreview, setImagePreview] = useState<string>('');
     const [showResults, setShowResults] = useState(false);
 
     // DeepLab state
@@ -91,6 +93,14 @@ export default function GenerationPage() {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const originalFileRef = useRef<File | null>(null);
+    const csvInputRef = useRef<HTMLInputElement>(null);
+
+    // CSV dataset state
+    const [csvFileName, setCsvFileName] = useState<string>('');
+    const [csvColumns, setCsvColumns] = useState<string[]>([]);
+    const [csvData, setCsvData] = useState<string[][]>([]);
+    const [csvMappingCol, setCsvMappingCol] = useState<string>('');
+    const [csvReferenceCol, setCsvReferenceCol] = useState<string>('');
 
     // Check SAM backend availability
     const checkSamBackend = useCallback(async () => {
@@ -127,9 +137,76 @@ export default function GenerationPage() {
             originalFileRef.current = file;
             const url = URL.createObjectURL(file);
             setImageUrl(url);
+            setImagePreview(url);
             setShowResults(false);
             setSelectedObjects({});
         }
+    };
+
+    // CSV parser
+    const handleCsvChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setCsvFileName(file.name);
+
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const text = ev.target?.result as string;
+            if (!text) return;
+
+            // Auto-detect delimiter
+            const firstLine = text.split('\n')[0];
+            let delimiter = ',';
+            if (firstLine.includes(';') && !firstLine.includes(',')) delimiter = ';';
+            else if (firstLine.includes('\t') && !firstLine.includes(',')) delimiter = '\t';
+
+            const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+            if (lines.length < 2) return;
+
+            const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
+            const rows = lines.slice(1).map(line =>
+                line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, ''))
+            );
+
+            setCsvColumns(headers);
+            setCsvData(rows);
+            const defaultMappingCol = headers[0] || '';
+            setCsvMappingCol(defaultMappingCol);
+            setCsvReferenceCol(headers.length > 1 ? headers[1] : headers[0] || '');
+
+            // Save min/max immediately
+            saveCsvMappingRange(headers, rows, defaultMappingCol);
+        };
+        reader.readAsText(file);
+    };
+
+    // Save CSV mapping range to sessionStorage
+    const saveCsvMappingRange = useCallback((columns: string[], data: string[][], mappingCol: string) => {
+        const colIdx = columns.indexOf(mappingCol);
+        if (colIdx >= 0) {
+            const numericValues = data
+                .map(row => parseFloat(row[colIdx]))
+                .filter(v => !isNaN(v));
+            if (numericValues.length > 0) {
+                sessionStorage.setItem('csv_mapping_min', String(Math.min(...numericValues)));
+                sessionStorage.setItem('csv_mapping_max', String(Math.max(...numericValues)));
+            }
+        }
+    }, []);
+
+    const clearCsv = () => {
+        setCsvFileName('');
+        setCsvColumns([]);
+        setCsvData([]);
+        setCsvMappingCol('');
+        setCsvReferenceCol('');
+        if (csvInputRef.current) csvInputRef.current.value = '';
+        sessionStorage.removeItem('csv_mapping_min');
+        sessionStorage.removeItem('csv_mapping_max');
+        sessionStorage.removeItem('csv_columns');
+        sessionStorage.removeItem('csv_data');
+        sessionStorage.removeItem('csv_mapping_col');
+        sessionStorage.removeItem('csv_reference_col');
     };
 
     // Load DeepLab model
@@ -226,6 +303,33 @@ export default function GenerationPage() {
                 sessionStorage.setItem('sam_masks', JSON.stringify(data.masks));
                 sessionStorage.setItem('sam_image_url', imageUrl);
 
+                // Save CSV data if available
+                if (csvColumns.length > 0) {
+                    sessionStorage.setItem('csv_columns', JSON.stringify(csvColumns));
+                    sessionStorage.setItem('csv_data', JSON.stringify(csvData));
+                    sessionStorage.setItem('csv_mapping_col', csvMappingCol);
+                    sessionStorage.setItem('csv_reference_col', csvReferenceCol);
+
+                    // Compute min/max of the mapping column
+                    const colIdx = csvColumns.indexOf(csvMappingCol);
+                    if (colIdx >= 0) {
+                        const numericValues = csvData
+                            .map(row => parseFloat(row[colIdx]))
+                            .filter(v => !isNaN(v));
+                        if (numericValues.length > 0) {
+                            sessionStorage.setItem('csv_mapping_min', String(Math.min(...numericValues)));
+                            sessionStorage.setItem('csv_mapping_max', String(Math.max(...numericValues)));
+                        }
+                    }
+                } else {
+                    sessionStorage.removeItem('csv_columns');
+                    sessionStorage.removeItem('csv_data');
+                    sessionStorage.removeItem('csv_mapping_col');
+                    sessionStorage.removeItem('csv_reference_col');
+                    sessionStorage.removeItem('csv_mapping_min');
+                    sessionStorage.removeItem('csv_mapping_max');
+                }
+
                 setModelLoadedStatus(`Trovati ${data.total_masks} oggetti! Apertura editor...`);
 
                 // Navigate to mask editor
@@ -269,10 +373,6 @@ export default function GenerationPage() {
         setLegends(legend);
         setShowResults(true);
     };
-
-
-
-
 
     const toggleObjectSelection = (objectName: string, color: [number, number, number]) => {
         setSelectedObjects(prev => {
@@ -353,8 +453,6 @@ export default function GenerationPage() {
         }
         return samBackendAvailable === false || isLoading;
     };
-
-
 
     return (
         <>
@@ -441,91 +539,202 @@ export default function GenerationPage() {
                     </div>
                 </div>
 
+                {/* Three columns layout */}
                 <div className="row">
-                    <div className="col-md-6">
-                        <div className="mb-3">
-                            <label htmlFor="modelNameSelect" className="form-label">
-                                {modelType === 'deeplab' ? 'Seleziona Modello DeepLab' : 'Seleziona Modello SAM'}
-                            </label>
-                            {modelType === 'deeplab' ? (
-                                <select
-                                    className="form-select"
-                                    id="modelNameSelect"
-                                    value={deeplabModelName}
-                                    onChange={(e) => setDeeplabModelName(e.target.value as DeepLabModelName)}
+                    {/* Column 1: Carica Modello */}
+                    <div className="col-md-4">
+                        <div className="card h-100">
+                            <div className="card-header bg-primary text-white">
+                                <h5 className="mb-0">📦 Carica Modello</h5>
+                            </div>
+                            <div className="card-body">
+                                <div className="mb-3">
+                                    <label htmlFor="modelNameSelect" className="form-label">
+                                        {modelType === 'deeplab' ? 'Seleziona Modello DeepLab' : 'Seleziona Modello SAM'}
+                                    </label>
+                                    {modelType === 'deeplab' ? (
+                                        <select
+                                            className="form-select"
+                                            id="modelNameSelect"
+                                            value={deeplabModelName}
+                                            onChange={(e) => setDeeplabModelName(e.target.value as DeepLabModelName)}
+                                        >
+                                            <option value="pascal">Pascal (20 classi)</option>
+                                            <option value="cityscapes">City Scapes (19 classi)</option>
+                                            <option value="ade20k">ADE20K (150 classi)</option>
+                                        </select>
+                                    ) : (
+                                        <select
+                                            className="form-select"
+                                            id="modelNameSelect"
+                                            value={samModelName}
+                                            onChange={(e) => setSamModelName(e.target.value as SAMModelName)}
+                                        >
+                                            <option value="vit_b">ViT-B (Base, ~375MB) - Consigliato</option>
+                                            <option value="vit_l">ViT-L (Large, ~1.2GB)</option>
+                                            <option value="vit_h">ViT-H (Huge, ~2.5GB) - Più accurato</option>
+                                        </select>
+                                    )}
+                                </div>
+                                <button
+                                    className="btn btn-primary w-100"
+                                    onClick={loadModel}
+                                    disabled={isLoadButtonDisabled()}
                                 >
-                                    <option value="pascal">Pascal (20 classi)</option>
-                                    <option value="cityscapes">City Scapes (19 classi)</option>
-                                    <option value="ade20k">ADE20K (150 classi)</option>
-                                </select>
-                            ) : (
-                                <select
-                                    className="form-select"
-                                    id="modelNameSelect"
-                                    value={samModelName}
-                                    onChange={(e) => setSamModelName(e.target.value as SAMModelName)}
-                                >
-                                    <option value="vit_b">ViT-B (Base, ~375MB) - Consigliato</option>
-                                    <option value="vit_l">ViT-L (Large, ~1.2GB)</option>
-                                    <option value="vit_h">ViT-H (Huge, ~2.5GB) - Più accurato</option>
-                                </select>
-                            )}
+                                    {isLoading ? (
+                                        <>
+                                            <span className="spinner-border spinner-border-sm me-2" role="status"></span>
+                                            Caricamento...
+                                        </>
+                                    ) : (
+                                        'Carica Modello'
+                                    )}
+                                </button>
+                                <div className="mt-3 p-2 bg-light rounded">
+                                    <p className="mb-0" style={{ color: 'mediumblue', fontWeight: 'bold', fontSize: '0.9rem' }}>
+                                        {modelLoadedStatus}
+                                    </p>
+                                </div>
+                            </div>
                         </div>
-                        <button
-                            className="btn btn-primary"
-                            onClick={loadModel}
-                            disabled={isLoadButtonDisabled()}
-                        >
-                            {isLoading ? (
-                                <>
-                                    <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                                    Caricamento...
-                                </>
-                            ) : (
-                                'Carica Modello'
-                            )}
-                        </button>
-                        <p className="mt-2" style={{ color: 'mediumblue', fontWeight: 'bold' }}>
-                            {modelLoadedStatus}
-                        </p>
                     </div>
 
-                    <div className="col-md-6">
-                        <div className="mb-3">
-                            <label htmlFor="chooseFiles" className="form-label">Scegli Immagine</label>
-                            <input
-                                type="file"
-                                className="form-control"
-                                id="chooseFiles"
-                                accept="image/*"
-                                ref={fileInputRef}
-                                onChange={handleFileChange}
-                            />
-                        </div>
+                    {/* Column 2: Carica Immagine con Preview */}
+                    <div className="col-md-4">
+                        <div className="card h-100">
+                            <div className="card-header bg-success text-white">
+                                <h5 className="mb-0">🖼️ Carica Immagine</h5>
+                            </div>
+                            <div className="card-body">
+                                <div className="mb-3">
+                                    <label htmlFor="chooseFiles" className="form-label">Scegli Immagine</label>
+                                    <input
+                                        type="file"
+                                        className="form-control"
+                                        id="chooseFiles"
+                                        accept="image/*"
+                                        ref={fileInputRef}
+                                        onChange={handleFileChange}
+                                    />
+                                </div>
 
-                        <button
-                            className="btn btn-success me-2"
-                            onClick={segmentImage}
-                            disabled={segmentButtonDisabled || !imageUrl || isLoading}
-                        >
-                            {isLoading ? (
-                                <>
-                                    <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                                    Segmentazione...
-                                </>
-                            ) : modelType === 'sam' ? (
-                                '🚀 Segmenta Automaticamente'
-                            ) : (
-                                'Segmenta Immagine'
-                            )}
-                        </button>
-                        <button className="btn btn-primary" onClick={saveImage}>
-                            💾 Salva
-                        </button>
+                                {/* Image Preview */}
+                                {imagePreview ? (
+                                    <div className="mt-3 text-center">
+                                        <div className="border rounded p-2 bg-light">
+                                            <Image
+                                                src={imagePreview}
+                                                alt="Preview"
+                                                className="img-fluid rounded"
+                                                style={{ maxHeight: '200px', objectFit: 'contain' }}
+                                                width={200}
+                                                height={200}
+                                                unoptimized
+                                            />
+                                            <p className="mt-2 mb-0 small text-muted">
+                                                Anteprima immagine caricata
+                                            </p>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="mt-3 text-center p-4 bg-light rounded">
+                                        <i className="bi bi-image" style={{ fontSize: '3rem', color: '#ccc' }}></i>
+                                        <p className="mt-2 text-muted">Nessuna immagine selezionata</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Column 3: Carica Dataset */}
+                    <div className="col-md-4">
+                        <div className="card h-100">
+                            <div className="card-header bg-info text-white">
+                                <h5 className="mb-0">📊 Carica Dataset</h5>
+                            </div>
+                            <div className="card-body">
+                                <div className="mb-3">
+                                    <label htmlFor="chooseCsv" className="form-label">
+                                        <i className="bi bi-file-earmark-spreadsheet me-1"></i>
+                                        Dataset CSV <span className="text-muted fw-normal">(opzionale)</span>
+                                    </label>
+                                    <div className="d-flex gap-2">
+                                        <input
+                                            type="file"
+                                            className="form-control"
+                                            id="chooseCsv"
+                                            accept=".csv,.tsv"
+                                            ref={csvInputRef}
+                                            onChange={handleCsvChange}
+                                        />
+                                        {csvFileName && (
+                                            <button className="btn btn-outline-danger btn-sm" onClick={clearCsv} title="Rimuovi CSV">
+                                                <i className="bi bi-x-lg"></i>
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* CSV Status */}
+                                {csvFileName ? (
+                                    <div className="mt-3 p-2 bg-light rounded">
+                                        <p className="mb-1 fw-bold">📄 {csvFileName}</p>
+                                        <p className="mb-0 small text-success">
+                                            <i className="bi bi-check-circle-fill me-1"></i>
+                                            {csvData.length} righe, {csvColumns.length} colonne
+                                        </p>
+                                        {csvColumns.length > 0 && (
+                                            <div className="mt-2">
+                                                <p className="mb-1 small fw-bold">Colonne disponibili:</p>
+                                                <div className="d-flex flex-wrap gap-1">
+                                                    {csvColumns.slice(0, 5).map((col, idx) => (
+                                                        <span key={idx} className="badge bg-secondary">{col}</span>
+                                                    ))}
+                                                    {csvColumns.length > 5 && (
+                                                        <span className="badge bg-secondary">+{csvColumns.length - 5}</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div className="mt-3 text-center p-4 bg-light rounded">
+                                        <i className="bi bi-file-earmark-spreadsheet" style={{ fontSize: '3rem', color: '#ccc' }}></i>
+                                        <p className="mt-2 text-muted">Nessun dataset caricato</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                {/* Image Display */}
+                {/* Action Buttons Row */}
+                <div className="row mt-4">
+                    <div className="col-12">
+                        <div className="d-flex justify-content-center gap-3">
+                            <button
+                                className="btn btn-success btn-lg"
+                                onClick={segmentImage}
+                                disabled={segmentButtonDisabled || !imageUrl || isLoading}
+                            >
+                                {isLoading ? (
+                                    <>
+                                        <span className="spinner-border spinner-border-sm me-2" role="status"></span>
+                                        Segmentazione...
+                                    </>
+                                ) : modelType === 'sam' ? (
+                                    '🚀 Segmenta Automaticamente'
+                                ) : (
+                                    'Segmenta Immagine'
+                                )}
+                            </button>
+                            <button className="btn btn-primary btn-lg" onClick={saveImage}>
+                                💾 Salva
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 {/* Image Display */}
                 <div className="row mt-4">
                     <div className="col-12">
@@ -603,8 +812,6 @@ export default function GenerationPage() {
                         </div>
                     </>
                 )}
-
-
             </div>
         </>
     );

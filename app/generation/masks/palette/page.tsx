@@ -88,6 +88,16 @@ const DEFAULT_SETTING: PaletteSetting = {
     tolerance: { ...DEFAULT_TOLERANCE }
 };
 
+// Tipo per le impostazioni di colorazione dalla pagina edit
+interface ColorizationSettings {
+    colorization: boolean;
+    paletteName: string;
+    selectedValue: number;
+    hueBlend: number;
+    satBlend: number;
+    lightBlend: number;
+}
+
 // Worker per elaborazione immagini
 const createColorWorker = () => {
     const workerCode = `
@@ -880,16 +890,59 @@ export default function MasksPalettePage() {
     const [suggestedTolerance, setSuggestedTolerance] = useState<ToleranceSettings | null>(null);
     const [activeTab, setActiveTab] = useState<{ [key: number]: 'mask' | 'selective' }>({});
 
+    // Modal "Aggiungi palette" state
+    const [showAddPaletteModal, setShowAddPaletteModal] = useState(false);
+    const [newPalStartColor, setNewPalStartColor] = useState('#0000ff');
+    const [newPalEndColor, setNewPalEndColor] = useState('#ff0000');
+    const [newPalMid1Enabled, setNewPalMid1Enabled] = useState(false);
+    const [newPalMid1Color, setNewPalMid1Color] = useState('#00ff00');
+    const [newPalMid2Enabled, setNewPalMid2Enabled] = useState(false);
+    const [newPalMid2Color, setNewPalMid2Color] = useState('#ffff00');
+    const [newPalName, setNewPalName] = useState('');
+
     const colorWorker = useRef<Worker | null>(null);
 
     const previousSettingsRef = useRef<Map<number, PaletteSetting>>(new Map());
     const [refinedSelectiveMaps, setRefinedSelectiveMaps] = useState<Map<number, Uint8Array>>(new Map());
+
+    // Colorization from edit page
+    const [colorizationMap, setColorizationMap] = useState<Map<number, ColorizationSettings>>(new Map());
 
     const imageRef = useRef<HTMLImageElement | null>(null);
     const resultCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const dropdownContainerRef = useRef<HTMLDivElement | null>(null);
 
     const lutCache = useRef<Map<string, [number, number, number][]>>(new Map());
+
+    // Funzione per blendare due colori in HSL
+    const blendColorsHSL = useCallback((
+        originalRgb: [number, number, number],
+        paletteRgb: [number, number, number],
+        hueBlend: number,
+        satBlend: number,
+        lightBlend: number
+    ): [number, number, number] => {
+        // Converti entrambi i colori in HSL
+        const [h1, s1, l1] = rgbToHsl(originalRgb[0], originalRgb[1], originalRgb[2]);
+        const [h2, s2, l2] = rgbToHsl(paletteRgb[0], paletteRgb[1], paletteRgb[2]);
+
+        // Calcola le differenze
+        let hDiff = h2 - h1;
+        // Gestisci il wrap-around per la tonalità (0-360)
+        if (hDiff > 180) hDiff -= 360;
+        if (hDiff < -180) hDiff += 360;
+
+        const sDiff = s2 - s1;
+        const lDiff = l2 - l1;
+
+        // Applica i blend factor
+        const hFinal = (h1 + hDiff * hueBlend + 360) % 360;
+        const sFinal = Math.max(0, Math.min(1, s1 + sDiff * satBlend));
+        const lFinal = Math.max(0, Math.min(1, l1 + lDiff * lightBlend));
+
+        // Converti di nuovo in RGB
+        return hslToRgb(hFinal, sFinal, lFinal);
+    }, []);
 
     // Inizializza worker
     useEffect(() => {
@@ -941,6 +994,26 @@ export default function MasksPalettePage() {
                 settings.set(m.mask_id, { ...DEFAULT_SETTING });
             });
             setPaletteSettings(settings);
+
+            // Load colorization settings from edit page
+            const colorizationJson = sessionStorage.getItem('colorization_settings');
+            if (colorizationJson) {
+                try {
+                    const parsed: Record<number, any> = JSON.parse(colorizationJson);
+                    const cMap = new Map<number, ColorizationSettings>();
+                    for (const [idStr, val] of Object.entries(parsed)) {
+                        cMap.set(Number(idStr), {
+                            colorization: val.colorization,
+                            paletteName: val.paletteName,
+                            selectedValue: val.selectedValue,
+                            hueBlend: val.hueBlend ?? 0.8,
+                            satBlend: val.satBlend ?? 0.8,
+                            lightBlend: val.lightBlend ?? 0.8,
+                        });
+                    }
+                    setColorizationMap(cMap);
+                } catch { /* ignore parse errors */ }
+            }
 
             const customData = localStorage.getItem(LOCAL_STORAGE_KEY);
             if (customData) {
@@ -1085,7 +1158,89 @@ export default function MasksPalettePage() {
             return a.area - b.area; // o b.area - a.area per ordine inverso
         });
 
-        // Applica le maschere in sequenza
+        // Prima di applicare le palette, applica la pre-colorazione dall'edit page
+        // per le maschere con colorization abilitata
+        const csvMinStr = sessionStorage.getItem('csv_mapping_min');
+        const csvMaxStr = sessionStorage.getItem('csv_mapping_max');
+        const csvMinVal = csvMinStr ? parseFloat(csvMinStr) : 0;
+        const csvMaxVal = csvMaxStr ? parseFloat(csvMaxStr) : 100;
+
+        for (const mask of sortedMasks) {
+            const colInfo = colorizationMap.get(mask.mask_id);
+            if (!colInfo || !colInfo.colorization) continue;
+
+            // Build LUT for the colorization palette
+            let colLut: [number, number, number][] | null = null;
+            const sciPal = SCIENTIFIC_PALETTES.find(p => p.name === colInfo.paletteName);
+            const custPal = customPalettes.find(p => p.name === colInfo.paletteName);
+            if (sciPal) {
+                colLut = interpolateColors(sciPal.colors, 256);
+            } else if (custPal) {
+                colLut = interpolateColors(custPal.colors.map(c => hexToRgb(c)), 256);
+            } else {
+                // Standard: gray gradient using mask color
+                colLut = interpolateColors([[30, 30, 30], mask.color, [240, 240, 240]], 256);
+            }
+
+            // Compute the palette color from selectedValue
+            const rangeSpan = csvMaxVal - csvMinVal || 1;
+            const t = (colInfo.selectedValue - csvMinVal) / rangeSpan;
+            const lutIdx = Math.max(0, Math.min(255, Math.round(t * 255)));
+            const paletteColor = colLut[lutIdx];
+
+            // Load mask bitmap and apply pre-colorization
+            const maskBitmap = await new Promise<Uint8Array | null>((resolve) => {
+                const maskImg = new Image();
+                maskImg.crossOrigin = 'Anonymous';
+                maskImg.onload = () => {
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = canvas.width;
+                    tempCanvas.height = canvas.height;
+                    const tempCtx = tempCanvas.getContext('2d');
+                    if (!tempCtx) { resolve(null); return; }
+                    tempCtx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+                    const mData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+                    const alphaMask = new Uint8Array(canvas.width * canvas.height);
+                    for (let i = 0; i < mData.data.length; i += 4) {
+                        alphaMask[i / 4] = mData.data[i + 3] > 0 ? 1 : 0;
+                    }
+                    resolve(alphaMask);
+                };
+                maskImg.onerror = () => resolve(null);
+                maskImg.src = `data:image/png;base64,${mask.mask_base64}`;
+            });
+
+            if (!maskBitmap) continue;
+
+            for (let i = 0; i < maskBitmap.length; i++) {
+                if (maskBitmap[i] === 1) {
+                    const idx = i * 4;
+
+                    // Ottieni il colore originale del pixel
+                    const originalColor: [number, number, number] = [
+                        cumulativeData.data[idx],
+                        cumulativeData.data[idx + 1],
+                        cumulativeData.data[idx + 2]
+                    ];
+
+                    // Applica il blend HSL con i fattori dalla pagina edit
+                    const blendedColor = blendColorsHSL(
+                        originalColor,
+                        paletteColor,
+                        colInfo.hueBlend,
+                        colInfo.satBlend,
+                        colInfo.lightBlend
+                    );
+
+                    cumulativeData.data[idx] = blendedColor[0];
+                    cumulativeData.data[idx + 1] = blendedColor[1];
+                    cumulativeData.data[idx + 2] = blendedColor[2];
+                    // Keep alpha at 255
+                }
+            }
+        }
+
+        // Applica le maschere in sequenza (palette processing)
         for (const mask of sortedMasks) {
             const setting = paletteSettings.get(mask.mask_id) || DEFAULT_SETTING;
             const hasPalette = setting.paletteName !== 'Originale';
@@ -1244,7 +1399,7 @@ export default function MasksPalettePage() {
 
         ctx.putImageData(cumulativeData, 0, 0);
 
-    }, [masks, paletteSettings, getLUT, maskDominantColors, refinedSelectiveMaps, calculateColorSimilarity]);
+    }, [masks, paletteSettings, getLUT, maskDominantColors, refinedSelectiveMaps, calculateColorSimilarity, colorizationMap, customPalettes, blendColorsHSL]);
 
     // Re-draw on changes
     useEffect(() => {
@@ -1342,6 +1497,38 @@ export default function MasksPalettePage() {
     };
 
     const goBack = () => router.push('/generation/masks/edit');
+
+    // Modal: build preview colors
+    const newPalPreviewColors = (): string[] => {
+        const arr = [newPalStartColor];
+        if (newPalMid1Enabled) arr.push(newPalMid1Color);
+        if (newPalMid2Enabled) arr.push(newPalMid2Color);
+        arr.push(newPalEndColor);
+        return arr;
+    };
+
+    // Modal: save new palette
+    const saveNewPalette = () => {
+        const name = newPalName.trim() || `Palette personalizzata ${customPalettes.length + 1}`;
+        const newPalette: CustomPalette = {
+            id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            name,
+            colors: newPalPreviewColors(),
+            createdAt: Date.now(),
+        };
+        const updated = [...customPalettes, newPalette];
+        setCustomPalettes(updated);
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updated));
+        lutCache.current.delete(name);
+        setNewPalName('');
+        setNewPalStartColor('#0000ff');
+        setNewPalEndColor('#ff0000');
+        setNewPalMid1Enabled(false);
+        setNewPalMid1Color('#00ff00');
+        setNewPalMid2Enabled(false);
+        setNewPalMid2Color('#ffff00');
+        setShowAddPaletteModal(false);
+    };
 
     const downloadResult = () => {
         const canvas = resultCanvasRef.current;
@@ -1696,6 +1883,19 @@ export default function MasksPalettePage() {
                                                                         </>
                                                                     )}
 
+                                                                    <li><hr className="dropdown-divider" /></li>
+                                                                    <li>
+                                                                        <button
+                                                                            className="dropdown-item d-flex align-items-center gap-2 text-primary"
+                                                                            onClick={() => {
+                                                                                setOpenDropdown(null);
+                                                                                setShowAddPaletteModal(true);
+                                                                            }}
+                                                                        >
+                                                                            <i className="bi bi-plus-circle"></i>
+                                                                            <span>Aggiungi palette</span>
+                                                                        </button>
+                                                                    </li>
                                                                     <li><hr className="dropdown-divider" /></li>
                                                                     <li>
                                                                         <button
@@ -2447,6 +2647,96 @@ export default function MasksPalettePage() {
                     </div>
                 </div>
             </div>
+
+            {/* Modal Aggiungi Palette */}
+            {showAddPaletteModal && (
+                <div className="modal d-block" tabIndex={-1} style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="modal-dialog modal-dialog-centered">
+                        <div className="modal-content">
+                            <div className="modal-header">
+                                <h5 className="modal-title">
+                                    <i className="bi bi-plus-circle me-2"></i>
+                                    Crea Palette Personalizzata
+                                </h5>
+                                <button type="button" className="btn-close" onClick={() => setShowAddPaletteModal(false)}></button>
+                            </div>
+                            <div className="modal-body">
+                                <div className="row g-3 align-items-end">
+                                    <div className="col-6">
+                                        <label className="form-label fw-semibold" style={{ fontSize: '0.85rem' }}>Colore iniziale</label>
+                                        <div className="d-flex align-items-center gap-2">
+                                            <input type="color" className="form-control form-control-color" value={newPalStartColor}
+                                                onChange={e => setNewPalStartColor(e.target.value)} style={{ width: '50px', height: '40px' }} />
+                                            <input type="text" className="form-control form-control-sm" value={newPalStartColor}
+                                                onChange={e => setNewPalStartColor(e.target.value)} style={{ width: '80px', fontFamily: 'monospace' }} maxLength={7} />
+                                        </div>
+                                    </div>
+                                    <div className="col-6">
+                                        <label className="form-label fw-semibold" style={{ fontSize: '0.85rem' }}>Colore finale</label>
+                                        <div className="d-flex align-items-center gap-2">
+                                            <input type="color" className="form-control form-control-color" value={newPalEndColor}
+                                                onChange={e => setNewPalEndColor(e.target.value)} style={{ width: '50px', height: '40px' }} />
+                                            <input type="text" className="form-control form-control-sm" value={newPalEndColor}
+                                                onChange={e => setNewPalEndColor(e.target.value)} style={{ width: '80px', fontFamily: 'monospace' }} maxLength={7} />
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="row g-3 mt-1">
+                                    <div className="col-6">
+                                        <div className="form-check mb-1">
+                                            <input type="checkbox" className="form-check-input" id="modalMid1" checked={newPalMid1Enabled}
+                                                onChange={e => setNewPalMid1Enabled(e.target.checked)} />
+                                            <label className="form-check-label fw-semibold" htmlFor="modalMid1" style={{ fontSize: '0.85rem' }}>Intermedio 1</label>
+                                        </div>
+                                        <div className="d-flex align-items-center gap-2">
+                                            <input type="color" className="form-control form-control-color" value={newPalMid1Color}
+                                                onChange={e => setNewPalMid1Color(e.target.value)} disabled={!newPalMid1Enabled}
+                                                style={{ width: '50px', height: '40px', opacity: newPalMid1Enabled ? 1 : 0.4 }} />
+                                            <input type="text" className="form-control form-control-sm" value={newPalMid1Color}
+                                                onChange={e => setNewPalMid1Color(e.target.value)} disabled={!newPalMid1Enabled}
+                                                style={{ width: '80px', fontFamily: 'monospace', opacity: newPalMid1Enabled ? 1 : 0.4 }} maxLength={7} />
+                                        </div>
+                                    </div>
+                                    <div className="col-6">
+                                        <div className="form-check mb-1">
+                                            <input type="checkbox" className="form-check-input" id="modalMid2" checked={newPalMid2Enabled}
+                                                onChange={e => setNewPalMid2Enabled(e.target.checked)} />
+                                            <label className="form-check-label fw-semibold" htmlFor="modalMid2" style={{ fontSize: '0.85rem' }}>Intermedio 2</label>
+                                        </div>
+                                        <div className="d-flex align-items-center gap-2">
+                                            <input type="color" className="form-control form-control-color" value={newPalMid2Color}
+                                                onChange={e => setNewPalMid2Color(e.target.value)} disabled={!newPalMid2Enabled}
+                                                style={{ width: '50px', height: '40px', opacity: newPalMid2Enabled ? 1 : 0.4 }} />
+                                            <input type="text" className="form-control form-control-sm" value={newPalMid2Color}
+                                                onChange={e => setNewPalMid2Color(e.target.value)} disabled={!newPalMid2Enabled}
+                                                style={{ width: '80px', fontFamily: 'monospace', opacity: newPalMid2Enabled ? 1 : 0.4 }} maxLength={7} />
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="mt-3">
+                                    <label className="form-label fw-semibold" style={{ fontSize: '0.85rem' }}>Anteprima</label>
+                                    <div style={{
+                                        height: '40px', borderRadius: '8px',
+                                        background: buildGradientFromHex(newPalPreviewColors()),
+                                        boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.08)',
+                                    }} />
+                                </div>
+                                <div className="mt-3">
+                                    <label className="form-label fw-semibold" style={{ fontSize: '0.85rem' }}>Nome palette</label>
+                                    <input type="text" className="form-control" placeholder="Es. La mia palette"
+                                        value={newPalName} onChange={e => setNewPalName(e.target.value)} />
+                                </div>
+                            </div>
+                            <div className="modal-footer">
+                                <button type="button" className="btn btn-secondary" onClick={() => setShowAddPaletteModal(false)}>Annulla</button>
+                                <button type="button" className="btn btn-primary" onClick={saveNewPalette}>
+                                    <i className="bi bi-save me-1"></i> Salva
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <style jsx>{`
                 .ring-pulse {
