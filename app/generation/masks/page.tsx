@@ -26,6 +26,18 @@ export default function MasksEditorPage() {
     const [isLoading, setIsLoading] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
 
+    // Lasso Tool state
+    const [isLassoMode, setIsLassoMode] = useState(false);
+    const [isDrawingLasso, setIsDrawingLasso] = useState(false);
+    const [lassoPoints, setLassoPoints] = useState<{ x: number, y: number }[]>([]);
+
+    // CSV Mapping state
+    const [csvColumns, setCsvColumns] = useState<string[]>([]);
+    const [csvData, setCsvData] = useState<string[][]>([]);
+    const [csvMappingCol, setCsvMappingCol] = useState<string>('');
+    const [csvMin, setCsvMin] = useState<number>(0);
+    const [csvMax, setCsvMax] = useState<number>(100);
+
     // Image state
     const [imageUrl, setImageUrl] = useState<string>('');
     const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
@@ -33,12 +45,34 @@ export default function MasksEditorPage() {
     // Refs
     const imageRef = useRef<HTMLImageElement | null>(null);
     const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    const lassoCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
     // Load data from sessionStorage on mount
     useEffect(() => {
         try {
             const masksJson = sessionStorage.getItem('sam_masks');
             const imgUrl = sessionStorage.getItem('sam_image_url');
+
+            // Load CSV state if present
+            const loadedColsStr = sessionStorage.getItem('csv_columns');
+            const loadedDataStr = sessionStorage.getItem('csv_data');
+            let initialMappingCol = sessionStorage.getItem('csv_mapping_col') || '';
+
+            if (loadedColsStr && loadedDataStr) {
+                const cols = JSON.parse(loadedColsStr);
+                const data = JSON.parse(loadedDataStr);
+                setCsvColumns(cols);
+                setCsvData(data);
+
+                if (!initialMappingCol && cols.length > 0) {
+                    initialMappingCol = cols[0];
+                }
+
+                if (initialMappingCol) {
+                    setCsvMappingCol(initialMappingCol);
+                    updateCsvMinMax(initialMappingCol, cols, data);
+                }
+            }
 
             if (!masksJson || !imgUrl) {
                 router.push('/generation');
@@ -161,6 +195,178 @@ export default function MasksEditorPage() {
         setStatusMessage(`↩️ Annullata ultima azione. Maschere: ${previousMasks.length}`);
     };
 
+    // --- Lasso Logic ---
+    const getCoordinates = (e: React.PointerEvent<HTMLCanvasElement>) => {
+        const canvas = lassoCanvasRef.current;
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        };
+    };
+
+    const drawLassoPath = (points: { x: number, y: number }[]) => {
+        const canvas = lassoCanvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (points.length === 0) return;
+
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+            ctx.lineTo(points[i].x, points[i].y);
+        }
+
+        ctx.strokeStyle = '#ff0000';
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+
+        if (points.length > 2) {
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+            ctx.fill();
+        }
+    };
+
+    const handleLassoPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+        if (!isLassoMode) return;
+        e.preventDefault();
+        const coords = getCoordinates(e);
+        if (coords) {
+            setIsDrawingLasso(true);
+            setLassoPoints([coords]);
+            drawLassoPath([coords]);
+        }
+    };
+
+    const handleLassoPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+        if (!isLassoMode || !isDrawingLasso) return;
+        e.preventDefault();
+        const coords = getCoordinates(e);
+        if (coords) {
+            const newPoints = [...lassoPoints, coords];
+            setLassoPoints(newPoints);
+            drawLassoPath(newPoints);
+        }
+    };
+
+    const handleLassoPointerUp = async (e: React.PointerEvent<HTMLCanvasElement>) => {
+        if (!isLassoMode || !isDrawingLasso) return;
+        setIsDrawingLasso(false);
+        const coords = getCoordinates(e);
+        let finalPoints = lassoPoints;
+        if (coords) {
+            finalPoints = [...lassoPoints, coords];
+            setLassoPoints(finalPoints);
+        }
+
+        if (finalPoints.length > 2) {
+            await createMaskFromLasso(finalPoints);
+        }
+
+        setLassoPoints([]);
+        const canvas = lassoCanvasRef.current;
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        setIsLassoMode(false);
+    };
+
+    const createMaskFromLasso = async (points: { x: number, y: number }[]) => {
+        const img = imageRef.current;
+        if (!img) return;
+
+        setIsLoading(true);
+        try {
+            setMasksHistory(prev => [...prev, samMasks]);
+
+            const canvas = document.createElement('canvas');
+            // Create the mask at the natural image resolution to match SAM backend masks
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+
+            const scaleX = img.naturalWidth / img.clientWidth;
+            const scaleY = img.naturalHeight / img.clientHeight;
+
+            ctx.beginPath();
+            ctx.moveTo(points[0].x * scaleX, points[0].y * scaleY);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i].x * scaleX, points[i].y * scaleY);
+            }
+            ctx.closePath();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+
+            let area = 0;
+            let minX = canvas.width, minY = canvas.height, maxX = 0, maxY = 0;
+
+            for (let i = 0; i < data.length; i += 4) {
+                if (data[i + 3] > 0 && data[i] > 0) { // check alpha and white
+                    area++;
+                    const idx = i / 4;
+                    const x = idx % canvas.width;
+                    const y = Math.floor(idx / canvas.width);
+
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            if (area === 0) {
+                setIsLoading(false);
+                return;
+            }
+
+            const base64 = canvas.toDataURL('image/png').split(',')[1];
+
+            const randomColor: [number, number, number] = [
+                Math.floor(Math.random() * 255),
+                Math.floor(Math.random() * 255),
+                Math.floor(Math.random() * 255)
+            ];
+
+            const newMaskId = Math.max(...samMasks.map(m => m.mask_id), 0) + 1;
+
+            const newMask: SAMMask = {
+                mask_id: newMaskId,
+                name: `Maschera Lazo #${newMaskId}`,
+                mask_base64: base64,
+                score: 1.0,
+                area: area,
+                coverage_percent: (area / (canvas.width * canvas.height)) * 100,
+                color: randomColor,
+                bbox: [minX, minY, maxX - minX, maxY - minY]
+            };
+
+            const updatedMasks = [...samMasks, newMask];
+            setSamMasks(updatedMasks);
+            setSelectedMaskIds(new Set([newMask.mask_id]));
+            setStatusMessage(`✅ Creata nuova maschera Lazo. Totale: ${updatedMasks.length}`);
+        } catch (error) {
+            console.error('Errore creazione maschera Lazo:', error);
+            alert('Errore durante la creazione della maschera Lazo');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    // -------------------
+
     // Union of selected masks (client-side)
     const combineMasks = async () => {
         if (selectedMaskIds.size < 2) {
@@ -268,6 +474,32 @@ export default function MasksEditorPage() {
         router.push('/generation/masks/edit');
     };
 
+    // Calculate and save CSV Min/Max when column changes
+    const updateCsvMinMax = (mappingCol: string, columns: string[] = csvColumns, data: string[][] = csvData) => {
+        const colIdx = columns.indexOf(mappingCol);
+        if (colIdx >= 0 && data.length > 0) {
+            const numericValues = data
+                .map(row => parseFloat(row[colIdx]))
+                .filter(v => !isNaN(v));
+
+            if (numericValues.length > 0) {
+                const min = Math.min(...numericValues);
+                const max = Math.max(...numericValues);
+                setCsvMin(min);
+                setCsvMax(max);
+                sessionStorage.setItem('csv_mapping_min', String(min));
+                sessionStorage.setItem('csv_mapping_max', String(max));
+            }
+        }
+    };
+
+    const handleCsvColumnChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const newCol = e.target.value;
+        setCsvMappingCol(newCol);
+        sessionStorage.setItem('csv_mapping_col', newCol);
+        updateCsvMinMax(newCol);
+    };
+
     if (!imageUrl) {
         return (
             <div className="container mt-5 text-center">
@@ -289,6 +521,27 @@ export default function MasksEditorPage() {
                     </button>
                     <h4 className="mb-0">🎭 Editor Maschere SAM</h4>
                 </div>
+
+                {/* CSV Mapping Selector in Header if data exists */}
+                {csvColumns.length > 0 && (
+                    <div className="d-flex align-items-center bg-light px-3 py-1 rounded border">
+                        <label className="me-2 fw-bold mb-0" style={{ fontSize: '0.9rem' }}>Mapping Colonna:</label>
+                        <select
+                            className="form-select form-select-sm w-auto me-3"
+                            value={csvMappingCol}
+                            onChange={handleCsvColumnChange}
+                        >
+                            {csvColumns.map(col => (
+                                <option key={col} value={col}>{col}</option>
+                            ))}
+                        </select>
+                        <div className="d-flex gap-3 text-muted" style={{ fontSize: '0.85rem' }}>
+                            <span><span className="fw-bold">Min:</span> {csvMin.toFixed(2)}</span>
+                            <span><span className="fw-bold">Max:</span> {csvMax.toFixed(2)}</span>
+                        </div>
+                    </div>
+                )}
+
                 {statusMessage && (
                     <span className="badge bg-info fs-6">{statusMessage}</span>
                 )}
@@ -333,6 +586,10 @@ export default function MasksEditorPage() {
                                             overlayCanvasRef.current.width = img.clientWidth;
                                             overlayCanvasRef.current.height = img.clientHeight;
                                         }
+                                        if (lassoCanvasRef.current) {
+                                            lassoCanvasRef.current.width = img.clientWidth;
+                                            lassoCanvasRef.current.height = img.clientHeight;
+                                        }
                                     }}
                                 />
                                 {/* Overlay canvas */}
@@ -346,6 +603,24 @@ export default function MasksEditorPage() {
                                         width: '100%',
                                         height: '100%'
                                     }}
+                                />
+                                {/* Lasso path canvas */}
+                                <canvas
+                                    ref={lassoCanvasRef}
+                                    style={{
+                                        position: 'absolute',
+                                        top: 0,
+                                        left: 0,
+                                        width: '100%',
+                                        height: '100%',
+                                        cursor: isLassoMode ? 'crosshair' : 'default',
+                                        pointerEvents: isLassoMode ? 'auto' : 'none',
+                                        opacity: isLassoMode ? 1 : 0
+                                    }}
+                                    onPointerDown={handleLassoPointerDown}
+                                    onPointerMove={handleLassoPointerMove}
+                                    onPointerUp={handleLassoPointerUp}
+                                    onPointerLeave={handleLassoPointerUp}
                                 />
                             </div>
                         </div>
@@ -376,6 +651,26 @@ export default function MasksEditorPage() {
                                 </button>
                                 <button className="btn btn-outline-secondary btn-sm" onClick={deselectAllMasks}>
                                     Deseleziona Tutte
+                                </button>
+
+                                <div className="vr mx-1"></div>
+
+                                <button
+                                    className={`btn btn-sm ${isLassoMode ? 'btn-danger' : 'btn-outline-primary'}`}
+                                    onClick={() => {
+                                        setIsLassoMode(!isLassoMode);
+                                        if (isLassoMode && isDrawingLasso) {
+                                            setIsDrawingLasso(false);
+                                            setLassoPoints([]);
+                                            const canvas = lassoCanvasRef.current;
+                                            if (canvas) {
+                                                const ctx = canvas.getContext('2d');
+                                                if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+                                            }
+                                        }
+                                    }}
+                                >
+                                    {isLassoMode ? '❌ Annulla Lazo' : '✏️ Lazo'}
                                 </button>
 
                                 <div className="vr mx-1"></div>

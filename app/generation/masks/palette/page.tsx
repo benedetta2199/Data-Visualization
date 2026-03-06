@@ -70,7 +70,7 @@ const DEFAULT_TOLERANCE: ToleranceSettings = {
 };
 
 const DEFAULT_SETTING: PaletteSetting = {
-    paletteName: 'Originale',
+    paletteName: 'Nessuna palette',
     hueShift: 0,
     satShift: 0,
     lightShift: 0,
@@ -96,6 +96,7 @@ interface ColorizationSettings {
     hueBlend: number;
     satBlend: number;
     lightBlend: number;
+    edgeFeather?: number; // Opzionale per retrocompatibilità
 }
 
 // Worker per elaborazione immagini
@@ -1009,6 +1010,7 @@ export default function MasksPalettePage() {
                             hueBlend: val.hueBlend ?? 0.8,
                             satBlend: val.satBlend ?? 0.8,
                             lightBlend: val.lightBlend ?? 0.8,
+                            edgeFeather: val.edgeFeather ?? 0,
                         });
                     }
                     setColorizationMap(cMap);
@@ -1026,7 +1028,7 @@ export default function MasksPalettePage() {
 
     // Helper: Get LUT
     const getLUT = useCallback((name: string): [number, number, number][] | null => {
-        if (name === 'Originale') return null;
+        if (name === 'Nessuna palette') return null;
         if (lutCache.current.has(name)) return lutCache.current.get(name)!;
 
         let colors: [number, number, number][] | null = null;
@@ -1169,6 +1171,9 @@ export default function MasksPalettePage() {
             const colInfo = colorizationMap.get(mask.mask_id);
             if (!colInfo || !colInfo.colorization) continue;
 
+            // Se la palette è "Nessuna palette", non applicare colorizzazione
+            if (colInfo.paletteName === 'Nessuna palette') continue;
+
             // Build LUT for the colorization palette
             let colLut: [number, number, number][] | null = null;
             const sciPal = SCIENTIFIC_PALETTES.find(p => p.name === colInfo.paletteName);
@@ -1243,7 +1248,7 @@ export default function MasksPalettePage() {
         // Applica le maschere in sequenza (palette processing)
         for (const mask of sortedMasks) {
             const setting = paletteSettings.get(mask.mask_id) || DEFAULT_SETTING;
-            const hasPalette = setting.paletteName !== 'Originale';
+            const hasPalette = setting.paletteName !== 'Nessuna palette';
             const lut = hasPalette ? getLUT(setting.paletteName) : null;
             if (hasPalette && !lut) continue;
 
@@ -1551,7 +1556,7 @@ export default function MasksPalettePage() {
     }
 
     const allPalettes = [
-        { name: 'Originale', label: 'Nessuna (Originale)', gradient: 'linear-gradient(to right, #ccc, #eee)', type: 'original' },
+        { name: 'Nessuna palette', label: 'Nessuna palette', gradient: 'linear-gradient(to right, #ccc, #eee)', type: 'none' },
         ...SCIENTIFIC_PALETTES.map(p => ({
             name: p.name,
             label: p.name,
@@ -1642,7 +1647,7 @@ export default function MasksPalettePage() {
                                             setSuggestedTolerance(suggested);
                                         }
 
-                                        const hasPal = setting.paletteName !== 'Originale';
+                                        const hasPal = setting.paletteName !== 'Nessuna palette';
                                         if (hasPal) {
                                             const palLut = getLUT(setting.paletteName);
                                             if (palLut) {
@@ -1744,7 +1749,7 @@ export default function MasksPalettePage() {
                                                                     selectiveMode: false, selectedDominantIdx: 0,
                                                                     selectiveHue: 0, selectiveSat: 50, selectiveLight: 50,
                                                                     palettePosition: 0.5, paletteHue: 0, paletteSat: 0, paletteLight: 50,
-                                                                    paletteOpacity: 100, paletteName: 'Originale',
+                                                                    paletteOpacity: 100, paletteName: 'Nessuna palette',
                                                                     tolerance: { ...DEFAULT_TOLERANCE }
                                                                 });
                                                                 setRefinedSelectiveMaps(prev => { const n = new Map(prev); n.delete(mask.mask_id); return n; });
@@ -1834,8 +1839,26 @@ export default function MasksPalettePage() {
                                                                     className={`dropdown-menu w-100 shadow ${isOpen ? 'show' : ''}`}
                                                                     style={{ maxHeight: '300px', overflowY: 'auto', ...(isOpen ? { display: 'block' } : {}) }}
                                                                 >
+                                                                    <li>
+                                                                        <button
+                                                                            className={`dropdown-item d-flex align-items-center gap-2 ${setting.paletteName === 'Nessuna palette' ? 'active' : ''}`}
+                                                                            onClick={() => setPalette(mask.mask_id, 'Nessuna palette')}
+                                                                        >
+                                                                            <div
+                                                                                style={{
+                                                                                    width: '40px',
+                                                                                    height: '15px',
+                                                                                    background: 'linear-gradient(to right, #ccc, #eee)',
+                                                                                    borderRadius: '2px',
+                                                                                    border: '1px solid #ddd'
+                                                                                }}
+                                                                            />
+                                                                            <span>Nessuna palette</span>
+                                                                        </button>
+                                                                    </li>
+
                                                                     {filteredScientific.length > 0 && (
-                                                                        <li><h6 className="dropdown-header">Standard ({filteredScientific.length})</h6></li>
+                                                                        <li><h6 className="dropdown-header">Scientifiche ({filteredScientific.length})</h6></li>
                                                                     )}
                                                                     {filteredScientific.map(p => (
                                                                         <li key={p.name}>
@@ -1896,24 +1919,6 @@ export default function MasksPalettePage() {
                                                                             <span>Aggiungi palette</span>
                                                                         </button>
                                                                     </li>
-                                                                    <li><hr className="dropdown-divider" /></li>
-                                                                    <li>
-                                                                        <button
-                                                                            className={`dropdown-item d-flex align-items-center gap-2 ${setting.paletteName === 'Originale' ? 'active' : ''}`}
-                                                                            onClick={() => setPalette(mask.mask_id, 'Originale')}
-                                                                        >
-                                                                            <div
-                                                                                style={{
-                                                                                    width: '40px',
-                                                                                    height: '15px',
-                                                                                    background: 'linear-gradient(to right, #ccc, #eee)',
-                                                                                    borderRadius: '2px',
-                                                                                    border: '1px solid #ddd'
-                                                                                }}
-                                                                            />
-                                                                            <span>Nessuna (Originale)</span>
-                                                                        </button>
-                                                                    </li>
                                                                 </ul>
                                                             </div>
                                                         </div>
@@ -1921,7 +1926,7 @@ export default function MasksPalettePage() {
                                                         {/* HSL Controls per Modifica maschera */}
                                                         <div className="mt-2">
                                                             {(() => {
-                                                                const hasPalette = setting.paletteName !== 'Originale';
+                                                                const hasPalette = setting.paletteName !== 'Nessuna palette';
 
                                                                 if (hasPalette) {
                                                                     const paletteGradient = currentPaletteObj?.gradient || '';
@@ -2147,8 +2152,26 @@ export default function MasksPalettePage() {
                                                                         className={`dropdown-menu w-100 shadow ${isOpen ? 'show' : ''}`}
                                                                         style={{ maxHeight: '300px', overflowY: 'auto', ...(isOpen ? { display: 'block' } : {}) }}
                                                                     >
+                                                                        <li>
+                                                                            <button
+                                                                                className={`dropdown-item d-flex align-items-center gap-2 ${setting.paletteName === 'Nessuna palette' ? 'active' : ''}`}
+                                                                                onClick={() => setPalette(mask.mask_id, 'Nessuna palette')}
+                                                                            >
+                                                                                <div
+                                                                                    style={{
+                                                                                        width: '40px',
+                                                                                        height: '15px',
+                                                                                        background: 'linear-gradient(to right, #ccc, #eee)',
+                                                                                        borderRadius: '2px',
+                                                                                        border: '1px solid #ddd'
+                                                                                    }}
+                                                                                />
+                                                                                <span>Nessuna palette</span>
+                                                                            </button>
+                                                                        </li>
+
                                                                         {filteredScientific.length > 0 && (
-                                                                            <li><h6 className="dropdown-header">Standard ({filteredScientific.length})</h6></li>
+                                                                            <li><h6 className="dropdown-header">Scientifiche ({filteredScientific.length})</h6></li>
                                                                         )}
                                                                         {filteredScientific.map(p => (
                                                                             <li key={p.name}>
@@ -2199,19 +2222,14 @@ export default function MasksPalettePage() {
                                                                         <li><hr className="dropdown-divider" /></li>
                                                                         <li>
                                                                             <button
-                                                                                className={`dropdown-item d-flex align-items-center gap-2 ${setting.paletteName === 'Originale' ? 'active' : ''}`}
-                                                                                onClick={() => setPalette(mask.mask_id, 'Originale')}
+                                                                                className="dropdown-item d-flex align-items-center gap-2 text-primary"
+                                                                                onClick={() => {
+                                                                                    setOpenDropdown(null);
+                                                                                    setShowAddPaletteModal(true);
+                                                                                }}
                                                                             >
-                                                                                <div
-                                                                                    style={{
-                                                                                        width: '40px',
-                                                                                        height: '15px',
-                                                                                        background: 'linear-gradient(to right, #ccc, #eee)',
-                                                                                        borderRadius: '2px',
-                                                                                        border: '1px solid #ddd'
-                                                                                    }}
-                                                                                />
-                                                                                <span>Nessuna (Originale)</span>
+                                                                                <i className="bi bi-plus-circle"></i>
+                                                                                <span>Aggiungi palette</span>
                                                                             </button>
                                                                         </li>
                                                                     </ul>
@@ -2236,7 +2254,7 @@ export default function MasksPalettePage() {
                                                                                 }}
                                                                                 onClick={() => {
                                                                                     const dc = dominant[i];
-                                                                                    const hasPal = setting.paletteName !== 'Originale';
+                                                                                    const hasPal = setting.paletteName !== 'Nessuna palette';
                                                                                     if (hasPal) {
                                                                                         const palLut = getLUT(setting.paletteName);
                                                                                         if (palLut) {
@@ -2289,7 +2307,7 @@ export default function MasksPalettePage() {
                                                         {/* HSL Controls per Modifica selettiva colori */}
                                                         <div className="mt-2">
                                                             {(() => {
-                                                                const hasPalette = setting.paletteName !== 'Originale';
+                                                                const hasPalette = setting.paletteName !== 'Nessuna palette';
 
                                                                 const badgeInputStyle: React.CSSProperties = {
                                                                     width: '52px', fontSize: '0.75rem', fontWeight: 700,

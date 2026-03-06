@@ -735,35 +735,6 @@ export default function GenerationPage() {
                     </div>
                 </div>
 
-                {/* Image Display */}
-                <div className="row mt-4">
-                    <div className="col-12">
-                        <div className="d-flex justify-content-center gap-4 flex-wrap">
-                            {imageUrl && (
-                                <div>
-                                    <h5 className="text-center">Immagine Originale</h5>
-                                    <img
-                                        ref={imageRef}
-                                        src={imageUrl}
-                                        alt="Original"
-                                        style={{ maxWidth: '600px', maxHeight: '600px', display: 'block' }}
-                                        crossOrigin="anonymous"
-                                    />
-                                </div>
-                            )}
-                            {showResults && (
-                                <div>
-                                    <h5 className="text-center">Risultato</h5>
-                                    <canvas
-                                        ref={canvasRef}
-                                        style={{ maxWidth: '600px', maxHeight: '600px', display: 'block' }}
-                                    />
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-
                 {/* DeepLab Legends */}
                 {showResults && modelType === 'deeplab' && Object.keys(legends).length > 0 && (
                     <>

@@ -186,7 +186,7 @@ export default function MasksEditPage() {
                     name: m.name || `Maschera #${m.mask_id + 1}`,
                     color: [...m.color] as [number, number, number],
                     colorization: false,
-                    paletteName: 'Standard',
+                    paletteName: 'Nessuna palette',
                     selectedValue: midVal,
                     // Nuovi slider con valore iniziale 0.8
                     hueBlend: 0.8,
@@ -278,6 +278,9 @@ export default function MasksEditPage() {
 
     // Get the gradient CSS for a palette name
     const getGradientForPalette = (paletteName: string): string => {
+        if (paletteName === 'Nessuna palette') {
+            return 'linear-gradient(to right, #cccccc, #999999)';
+        }
         const sci = SCIENTIFIC_PALETTES.find(p => p.name === paletteName);
         if (sci) return buildGradientCSS(sci.colors);
         const cust = customPalettes.find(p => p.name === paletteName);
@@ -326,7 +329,7 @@ export default function MasksEditPage() {
         });
     };
 
-    // Funzione per calcolare la distanza dal bordo della maschera
+    // Funzione per calcolare la distanza dal bordo della maschera (all'esterno)
     const calculateEdgeDistance = (
         maskData: ImageData,
         x: number,
@@ -334,14 +337,15 @@ export default function MasksEditPage() {
         width: number,
         height: number
     ): number => {
-        if (x < 0 || x >= width || y < 0 || y >= height) return 0;
+        if (x < 0 || x >= width || y < 0 || y >= height) return Infinity;
 
+        // Se il pixel è DENTRO la maschera, la distanza "esterna" è 0
         const idx = y * width + x;
-        if ((maskData.data[idx * 4 + 3] || 0) === 0) return 0;
+        if ((maskData.data[idx * 4 + 3] || 0) > 0) return 0;
 
-        // Cerca il bordo più vicino (distanza di Manhattan semplificata)
+        // Cerca il pixel della maschera più vicino (distanza verso l'interno)
         let minDist = Infinity;
-        const searchRadius = 10; // Raggio massimo di ricerca
+        const searchRadius = 15; // Raggio di sfumatura espanso in fuori
 
         for (let dy = -searchRadius; dy <= searchRadius; dy++) {
             for (let dx = -searchRadius; dx <= searchRadius; dx++) {
@@ -350,15 +354,15 @@ export default function MasksEditPage() {
                 if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
 
                 const nIdx = ny * width + nx;
-                // Se il pixel vicino non è nella maschera, siamo vicino a un bordo
-                if ((maskData.data[nIdx * 4 + 3] || 0) === 0) {
+                // Se il pixel vicino appartiene alla maschera, calcoliamo la distanza
+                if ((maskData.data[nIdx * 4 + 3] || 0) > 0) {
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     minDist = Math.min(minDist, dist);
                 }
             }
         }
 
-        return minDist === Infinity ? searchRadius : minDist;
+        return minDist;
     };
 
     // Funzione per blendare due colori in HSL
@@ -460,6 +464,9 @@ export default function MasksEditPage() {
                 // Se colorizzazione non attiva, salta questa maschera
                 if (!settings.colorization) continue;
 
+                // Se la palette è "Nessuna palette", salta questa maschera
+                if (settings.paletteName === 'Nessuna palette') continue;
+
                 console.log('Processo maschera', mask.mask_id, 'con palette', settings.paletteName);
 
                 try {
@@ -479,7 +486,7 @@ export default function MasksEditPage() {
                         const rgbColors = custDef.colors.map(c => hexToRgb(c));
                         lut = interpolateColors(rgbColors, 256);
                     } else {
-                        // Standard: usa la palette con i colori della maschera
+                        // Fallback: usa la palette con i colori della maschera
                         lut = interpolateColors([
                             settings.color,
                             settings.color,
@@ -492,67 +499,94 @@ export default function MasksEditPage() {
                     // Ottieni i dati dell'immagine corrente dall'offscreen canvas
                     const currentImageData = ctx.getImageData(0, 0, offscreenCanvas.width, offscreenCanvas.height);
 
-                    // Applica la colorazione SOLO ai pixel della maschera
+                    // Prima passata: Identifica l'area d'azione della colorazione basata sulla maschera 
+                    // (inclusi i pixel sfumati all'esterno, se feathering > 0)
+                    const actionArea = new Uint8Array(offscreenCanvas.width * offscreenCanvas.height);
+
+                    // Ottieni il bounding box per ottimizzare
+                    const [minX, minY, boxW, boxH] = mask.bbox;
+                    const bMaxX = minX + boxW;
+                    const bMaxY = minY + boxH;
+
+                    const featherPixels = settings.edgeFeather > 0 ? 15 * (settings.edgeFeather + 0.1) : 0;
+
+                    const scanMinY = Math.max(0, minY - featherPixels);
+                    const scanMaxY = Math.min(offscreenCanvas.height, bMaxY + featherPixels);
+                    const scanMinX = Math.max(0, minX - featherPixels);
+                    const scanMaxX = Math.min(offscreenCanvas.width, bMaxX + featherPixels);
+
                     let pixelsModificati = 0;
 
-                    for (let i = 0; i < maskImageData.data.length; i += 4) {
-                        if (maskImageData.data[i + 3] > 0) { // Se il pixel è nella maschera
-                            const pixelIdx = i / 4;
-                            const x = pixelIdx % offscreenCanvas.width;
-                            const y = Math.floor(pixelIdx / offscreenCanvas.width);
+                    for (let y = scanMinY; y < scanMaxY; y++) {
+                        for (let x = scanMinX; x < scanMaxX; x++) {
+                            const pixelIdx = Math.floor(y) * offscreenCanvas.width + Math.floor(x);
+                            const i = pixelIdx * 4;
 
-                            let pixelValue: number;
+                            const isInsideMask = maskImageData.data[i + 3] > 0;
 
-                            if (pixelValues && pixelValues[pixelIdx] !== undefined) {
-                                pixelValue = pixelValues[pixelIdx];
-                            } else {
-                                pixelValue = settings.selectedValue;
-                            }
+                            let alpha = 0.0;
 
-                            // Calcola il colore della palette in base al valore del pixel
-                            const t = (pixelValue - csvMin) / rangeSpan;
-                            const lutIdx = Math.max(0, Math.min(255, Math.round(t * 255)));
-                            const paletteColor = lut[lutIdx];
-
-                            // Calcola il fattore di opacità in base alla distanza dal bordo
-                            let alpha = 1.0;
-                            if (settings.edgeFeather > 0) {
+                            if (isInsideMask) {
+                                // Dentro la maschera è tutto opaco (alpha da colorazione pieno)
+                                alpha = 1.0;
+                            } else if (settings.edgeFeather > 0) {
+                                // Fuori dalla maschera: calcola la sfumatura in base alla distanza
                                 const edgeDist = calculateEdgeDistance(maskImageData, x, y, offscreenCanvas.width, offscreenCanvas.height);
-                                const maxDist = 10; // Distanza massima considerata per la sfumatura
-                                const featherFactor = Math.min(1, edgeDist / (maxDist * (1 - settings.edgeFeather + 0.1)));
-                                alpha = Math.min(1, featherFactor);
+                                const maxDist = 15; // Distanza massima della sfumatura
+
+                                if (edgeDist <= maxDist) {
+                                    // Calcola feather all'esterno: 1 al bordo, va verso 0 man mano che mi allontano
+                                    const featherFactor = 1 - (edgeDist / (maxDist * (settings.edgeFeather + 0.1)));
+                                    alpha = Math.max(0, Math.min(1, featherFactor));
+                                }
                             }
 
-                            // Ottieni il colore originale del pixel
-                            const originalColor: [number, number, number] = [
-                                currentImageData.data[i],
-                                currentImageData.data[i + 1],
-                                currentImageData.data[i + 2]
-                            ];
+                            if (alpha > 0) {
+                                let pixelValue: number;
 
-                            // Applica il blend HSL con i fattori
-                            const blendedColor = blendColorsHSL(
-                                originalColor,
-                                paletteColor,
-                                settings.hueBlend,
-                                settings.satBlend,
-                                settings.lightBlend
-                            );
+                                // Usa il valore del CSV per la mappatura colori
+                                if (pixelValues && pixelValues[pixelIdx] !== undefined) {
+                                    pixelValue = pixelValues[pixelIdx];
+                                } else {
+                                    pixelValue = settings.selectedValue;
+                                }
 
-                            // Applica il colore con l'alpha calcolato (mix tra originale e colorato)
-                            if (alpha >= 1.0) {
-                                currentImageData.data[i] = blendedColor[0];
-                                currentImageData.data[i + 1] = blendedColor[1];
-                                currentImageData.data[i + 2] = blendedColor[2];
-                            } else {
-                                // Sfuma con l'originale in base all'alpha
-                                currentImageData.data[i] = Math.round(originalColor[0] * (1 - alpha) + blendedColor[0] * alpha);
-                                currentImageData.data[i + 1] = Math.round(originalColor[1] * (1 - alpha) + blendedColor[1] * alpha);
-                                currentImageData.data[i + 2] = Math.round(originalColor[2] * (1 - alpha) + blendedColor[2] * alpha);
+                                // Calcola il colore della palette in base al valore del pixel
+                                const t = (pixelValue - csvMin) / rangeSpan;
+                                const lutIdx = Math.max(0, Math.min(255, Math.round(t * 255)));
+                                const paletteColor = lut[lutIdx];
+
+                                // Ottieni il colore originale del pixel
+                                const originalColor: [number, number, number] = [
+                                    currentImageData.data[i],
+                                    currentImageData.data[i + 1],
+                                    currentImageData.data[i + 2]
+                                ];
+
+                                // Applica il blend HSL con i fattori scelti dall'utente
+                                const blendedColor = blendColorsHSL(
+                                    originalColor,
+                                    paletteColor,
+                                    settings.hueBlend,
+                                    settings.satBlend,
+                                    settings.lightBlend
+                                );
+
+                                // Applica il colore con l'alpha calcolato per la maschera (o sfumato in fuori)
+                                if (alpha >= 1.0) {
+                                    currentImageData.data[i] = blendedColor[0];
+                                    currentImageData.data[i + 1] = blendedColor[1];
+                                    currentImageData.data[i + 2] = blendedColor[2];
+                                } else {
+                                    // Sfuma col fondo preesistente (originale dell'immagine)
+                                    currentImageData.data[i] = Math.round(originalColor[0] * (1 - alpha) + blendedColor[0] * alpha);
+                                    currentImageData.data[i + 1] = Math.round(originalColor[1] * (1 - alpha) + blendedColor[1] * alpha);
+                                    currentImageData.data[i + 2] = Math.round(originalColor[2] * (1 - alpha) + blendedColor[2] * alpha);
+                                }
+                                currentImageData.data[i + 3] = 255; // Opaco finale sull'immagine
+
+                                pixelsModificati++;
                             }
-                            currentImageData.data[i + 3] = 255; // Opaco
-
-                            pixelsModificati++;
                         }
                     }
 
@@ -906,18 +940,22 @@ export default function MasksEditPage() {
                                                                         marginTop: '2px',
                                                                     }}
                                                                 >
-                                                                    {/* Standard */}
+                                                                    {/* Nessuna palette - opzione disabilitata quando il selettore è attivo */}
                                                                     <div
                                                                         className="d-flex align-items-center gap-2 px-2 py-1"
-                                                                        style={{ cursor: 'pointer', backgroundColor: settings.paletteName === 'Standard' ? '#e8f0fe' : undefined, fontSize: '0.8rem' }}
+                                                                        style={{
+                                                                            cursor: 'default',
+                                                                            backgroundColor: settings.paletteName === 'Nessuna palette' ? '#e8f0fe' : undefined,
+                                                                            fontSize: '0.8rem',
+                                                                            opacity: 0.5
+                                                                        }}
                                                                         onClick={() => {
-                                                                            updateSetting(mask.mask_id, { paletteName: 'Standard' });
+                                                                            // Non fa nulla - opzione disabilitata quando il selettore è attivo
                                                                             setOpenPaletteDropdown(null);
-                                                                            setTimeout(() => drawMaskOverlays(), 10);
                                                                         }}
                                                                     >
-                                                                        <div style={{ width: '50px', height: '12px', borderRadius: '2px', background: getGradientForPalette('Standard'), border: '1px solid #ddd', flexShrink: 0 }} />
-                                                                        <span>Standard</span>
+                                                                        <div style={{ width: '50px', height: '12px', borderRadius: '2px', background: getGradientForPalette('Nessuna palette'), border: '1px solid #ddd', flexShrink: 0 }} />
+                                                                        <span>Nessuna palette (selettore attivo)</span>
                                                                     </div>
 
                                                                     {/* Matching palettes */}
