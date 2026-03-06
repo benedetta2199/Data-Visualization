@@ -479,17 +479,19 @@ export default function MasksEditorPage() {
         const colIdx = columns.indexOf(mappingCol);
         if (colIdx >= 0 && data.length > 0) {
             const numericValues = data
-                .map(row => parseFloat(row[colIdx]))
+                .map(row => {
+                    const val = row[colIdx];
+                    return val ? parseFloat(val.replace(',', '.')) : NaN;
+                })
                 .filter(v => !isNaN(v));
 
-            if (numericValues.length > 0) {
-                const min = Math.min(...numericValues);
-                const max = Math.max(...numericValues);
-                setCsvMin(min);
-                setCsvMax(max);
-                sessionStorage.setItem('csv_mapping_min', String(min));
-                sessionStorage.setItem('csv_mapping_max', String(max));
-            }
+            const min = numericValues.length > 0 ? Math.min(...numericValues) : 0;
+            const max = numericValues.length > 0 ? Math.max(...numericValues) : 100;
+
+            setCsvMin(min);
+            setCsvMax(max);
+            sessionStorage.setItem('csv_mapping_min', String(min));
+            sessionStorage.setItem('csv_mapping_max', String(max));
         }
     };
 
@@ -521,26 +523,6 @@ export default function MasksEditorPage() {
                     </button>
                     <h4 className="mb-0">🎭 Editor Maschere SAM</h4>
                 </div>
-
-                {/* CSV Mapping Selector in Header if data exists */}
-                {csvColumns.length > 0 && (
-                    <div className="d-flex align-items-center bg-light px-3 py-1 rounded border">
-                        <label className="me-2 fw-bold mb-0" style={{ fontSize: '0.9rem' }}>Mapping Colonna:</label>
-                        <select
-                            className="form-select form-select-sm w-auto me-3"
-                            value={csvMappingCol}
-                            onChange={handleCsvColumnChange}
-                        >
-                            {csvColumns.map(col => (
-                                <option key={col} value={col}>{col}</option>
-                            ))}
-                        </select>
-                        <div className="d-flex gap-3 text-muted" style={{ fontSize: '0.85rem' }}>
-                            <span><span className="fw-bold">Min:</span> {csvMin.toFixed(2)}</span>
-                            <span><span className="fw-bold">Max:</span> {csvMax.toFixed(2)}</span>
-                        </div>
-                    </div>
-                )}
 
                 {statusMessage && (
                     <span className="badge bg-info fs-6">{statusMessage}</span>
@@ -629,12 +611,54 @@ export default function MasksEditorPage() {
 
                 {/* Right column — Controls + Mask grid (col-7) */}
                 <div className="col-7 d-flex flex-column">
-                    <div className="card h-100">
+                    {/* Pulsante Avanti spostato sopra CSV Mapping e reso più evidente */}
+                    <div className="d-flex justify-content-end mb-2">
+                        <button className="btn btn-success" onClick={goToEdit}>
+                            Avanti →
+                        </button>
+                    </div>
+
+                    {/* CSV Mapping Selector - Stile rinnovato */}
+                    <div className="card mb-2 border-0 shadow-sm">
+                        <div className="card-body py-2 px-3" style={{ backgroundColor: '#f8f9fa' }}>
+                            <div className="d-flex flex-wrap align-items-center gap-3">
+                                <div className="d-flex align-items-center w-75">
+                                    <span className="me-2 text-secondary w-50" style={{ fontSize: '0.9rem' }}>
+                                        <i className="bi bi-table me-1"></i>Colonna di riferimento:
+                                    </span>
+                                    <select
+                                        className="form-select form-select-sm border-primary"
+                                        style={{ minWidth: '180px', backgroundColor: 'white' }}
+                                        value={csvMappingCol || ''}
+                                        onChange={handleCsvColumnChange}
+                                        disabled={csvColumns.length === 0}
+                                    >
+                                        <option value="">-- Seleziona colonna --</option>
+                                        {csvColumns.map(col => (
+                                            <option key={col} value={col}>{col}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {csvMappingCol && csvColumns.length > 0 && (
+                                    <div className="d-flex gap-3">
+                                        <span className="badge bg-light text-dark px-3 py-2">
+                                            <span className="text-muted me-1">Min:</span>
+                                            <strong>{csvMin.toFixed(2)}</strong>
+                                        </span>
+                                        <span className="badge bg-light text-dark px-3 py-2">
+                                            <span className="text-muted me-1">Max:</span>
+                                            <strong>{csvMax.toFixed(2)}</strong>
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="card h-100" style={{ flex: '1 1 auto', overflow: 'hidden' }}>
                         <div className="card-header bg-success text-white py-2 d-flex align-items-center justify-content-between">
                             <strong>🎭 Maschere ({samMasks.length})</strong>
-                            <button className="btn btn-light btn-sm" onClick={goToEdit}>
-                                Avanti →
-                            </button>
                         </div>
                         <div className="card-body d-flex flex-column p-3" style={{ overflow: 'hidden' }}>
                             {/* Controls toolbar */}
@@ -714,8 +738,8 @@ export default function MasksEditorPage() {
                                 gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
                                 gap: '8px',
                                 overflowY: 'auto',
-                                flex: '1 1 auto', // Cambiato da 'none' a '1 1 auto'
-                                height: 0,     // Importante per il flex container
+                                flex: '1 1 auto',
+                                height: 0,
                                 padding: '8px',
                                 backgroundColor: '#f8f9fa',
                                 borderRadius: '8px'

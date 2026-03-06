@@ -136,18 +136,28 @@ export default function MasksEditPage() {
             let maxStr = sessionStorage.getItem('csv_mapping_max');
 
             // Fallback: compute from raw CSV data if dedicated keys are missing
+            const csvColsJson = sessionStorage.getItem('csv_columns');
+            const csvDataJson = sessionStorage.getItem('csv_data');
+            const csvMappingCol = sessionStorage.getItem('csv_mapping_col');
+            const csvRefCol = sessionStorage.getItem('csv_reference_col');
+
+            let cols: string[] = [];
+            let rows: string[][] = [];
+
+            if (csvColsJson && csvDataJson) {
+                try {
+                    cols = JSON.parse(csvColsJson);
+                    rows = JSON.parse(csvDataJson);
+                } catch { }
+            }
+
             if ((minStr === null || maxStr === null)) {
-                const csvColsJson = sessionStorage.getItem('csv_columns');
-                const csvDataJson = sessionStorage.getItem('csv_data');
-                const csvMappingCol = sessionStorage.getItem('csv_mapping_col');
-                if (csvColsJson && csvDataJson && csvMappingCol) {
+                if (cols.length > 0 && rows.length > 0 && csvMappingCol) {
                     try {
-                        const cols: string[] = JSON.parse(csvColsJson);
-                        const rows: string[][] = JSON.parse(csvDataJson);
                         const colIdx = cols.indexOf(csvMappingCol);
                         if (colIdx >= 0) {
                             const numericValues = rows
-                                .map(row => parseFloat(row[colIdx]))
+                                .map(row => parseFloat((row[colIdx] || '').replace(',', '.')))
                                 .filter(v => !isNaN(v));
                             if (numericValues.length > 0) {
                                 minStr = String(Math.min(...numericValues));
@@ -182,12 +192,46 @@ export default function MasksEditPage() {
             const midVal = (isNaN(mn) ? 0 : mn) + ((isNaN(mx) ? 100 : mx) - (isNaN(mn) ? 0 : mn)) / 2;
 
             loadedMasks.forEach(m => {
+                let initialValue = midVal;
+
+                // Lookup value from CSV for this specific mask
+                if (cols.length > 0 && rows.length > 0 && csvRefCol && csvMappingCol) {
+                    const refIdx = cols.indexOf(csvRefCol);
+                    const mapIdx = cols.indexOf(csvMappingCol);
+
+                    if (refIdx >= 0 && mapIdx >= 0) {
+                        for (const row of rows) {
+                            const refVal = row[refIdx] ? row[refIdx].trim() : '';
+                            const maskName = m.name || `Maschera #${m.mask_id + 1}`;
+                            const idStr = (m.mask_id).toString();
+                            const idPlusOneStr = (m.mask_id + 1).toString();
+
+                            if (
+                                refVal === maskName ||
+                                refVal === idStr ||
+                                refVal === idPlusOneStr ||
+                                maskName.includes(` ${refVal}`) ||
+                                maskName.includes(`#${refVal}`) ||
+                                refVal === `Maschera ${idPlusOneStr}` ||
+                                refVal === `Maschera #${idPlusOneStr}`
+                            ) {
+                                const valStr = row[mapIdx];
+                                const val = parseFloat((valStr || '').replace(',', '.'));
+                                if (!isNaN(val)) {
+                                    initialValue = val;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 settings.set(m.mask_id, {
                     name: m.name || `Maschera #${m.mask_id + 1}`,
                     color: [...m.color] as [number, number, number],
                     colorization: false,
                     paletteName: 'Nessuna palette',
-                    selectedValue: midVal,
+                    selectedValue: initialValue,
                     // Nuovi slider con valore iniziale 0.8
                     hueBlend: 0.8,
                     satBlend: 0.8,
@@ -544,11 +588,12 @@ export default function MasksEditPage() {
                             if (alpha > 0) {
                                 let pixelValue: number;
 
-                                // Usa il valore del CSV per la mappatura colori
+                                // Usa il valore associato alla maschera intera
+                                pixelValue = settings.selectedValue;
+
+                                // Fallback (vecchia logica per DeepLab)
                                 if (pixelValues && pixelValues[pixelIdx] !== undefined) {
                                     pixelValue = pixelValues[pixelIdx];
-                                } else {
-                                    pixelValue = settings.selectedValue;
                                 }
 
                                 // Calcola il colore della palette in base al valore del pixel
