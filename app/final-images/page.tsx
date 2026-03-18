@@ -32,12 +32,18 @@ export default function FinalImagesPage() {
         try {
             const response = await fetch('/api/palettes');
             const data = await response.json();
-            setPalettes(data);
-            if (data.length > 0) {
-                setSelectedPalette(data[0].id);
+            if (Array.isArray(data)) {
+                setPalettes(data);
+                if (data.length > 0) {
+                    setSelectedPalette(data[0].id);
+                }
+            } else {
+                console.error('Palettes API returned an error or non-array:', data);
+                setPalettes([]);
             }
         } catch (error) {
             console.error('Error fetching palettes:', error);
+            setPalettes([]);
         }
     };
 

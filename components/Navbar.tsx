@@ -38,7 +38,7 @@ export default function Navbar() {
         <nav className="navbar navbar-expand-lg navbar-dark bg-dark p-3">
             <div className="container-fluid">
                 <Link className="navbar-brand" href="/">
-                    Tirocinio
+                    PicDemo
                 </Link>
 
                 <button

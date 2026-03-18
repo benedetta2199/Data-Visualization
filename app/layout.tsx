@@ -4,7 +4,7 @@ import './globals.css';
 import Navbar from '@/components/Navbar';
 
 export const metadata: Metadata = {
-    title: "Tirocinio",
+    title: "PicDemo",
     description: "Applicazione per elaborazione immagini con segmentazione e gradienti",
 };
 

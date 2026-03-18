@@ -757,13 +757,6 @@ export default function MasksEditPage() {
                                 <strong>📷 Anteprima</strong>
                                 <small className="ms-2 text-light">Le modifiche si aggiornano in tempo reale</small>
                             </div>
-                            <button
-                                className={`btn btn-sm ${showOverlays ? 'btn-outline-light' : 'btn-warning'}`}
-                                onClick={() => setShowOverlays(!showOverlays)}
-                                title={showOverlays ? 'Nascondi maschere' : 'Mostra maschere'}
-                            >
-                                {showOverlays ? '👁️ Maschere ON' : '👁️‍🗨️ Maschere OFF'}
-                            </button>
                         </div>
                         <div
                             className="card-body d-flex align-items-start justify-content-center p-2"
